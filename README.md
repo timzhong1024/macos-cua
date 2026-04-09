@@ -17,11 +17,14 @@ It is designed around three defaults:
 
 Use `macos-cua doctor` to inspect current readiness.
 
+Use `macos-cua onboard` to trigger the native prompts, open the relevant System Settings panes, and guide a human through granting both permissions. In a tty session it waits by default; in non-tty mode it triggers the flow and returns immediately unless you pass `--wait`.
+
 ## Commands
 
 ```text
 macos-cua [--json] <command> [args...]
 
+onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
 doctor
 state
 record enable|disable|status
@@ -42,6 +45,9 @@ window frontmost|list|activate|minimize|maximize|close
 
 ```bash
 swift run macos-cua doctor
+swift run macos-cua onboard
+swift run macos-cua onboard --wait --timeout 180
+swift run macos-cua --json onboard --no-wait
 swift run macos-cua record enable
 swift run macos-cua --json state
 swift run macos-cua screenshot /tmp/frontmost.png
@@ -66,6 +72,7 @@ swift run macos-cua window list
 - If no usable frontmost window is available, default coordinate-taking commands fall back to screen coordinates and report that fallback in output.
 - `window list` is AX-first when Accessibility is available, then falls back to CoreGraphics window discovery.
 - `window list`, `window frontmost`, and `state.frontmostWindow.bounds` remain screen-global diagnostics; they are not window-local action coordinates.
+- Missing permission errors point back to `macos-cua onboard` so agent and human flows land on the same recovery path.
 - Browser DOM/ref actions are intentionally out of scope for this repo.
 - `record enable` starts a persistent session under `~/Library/Application Support/macos-cua/records/`; each subsequent command appends an action log entry, a full-screen timeline screenshot, failure-only snapshots, and a replayable `replay.sh` trace until `record disable`.
 - A shareable VS Code debug example lives at `.vscode/launch.example.json`; local `.vscode/launch.json` stays ignored.

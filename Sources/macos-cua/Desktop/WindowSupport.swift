@@ -5,7 +5,7 @@ import Foundation
 
 enum WindowSupport {
     static func isAccessibilityTrusted() -> Bool {
-        AXIsProcessTrusted()
+        PermissionSupport.isGranted(.accessibility)
     }
 
     static func axAppElement(pid: pid_t) -> AXUIElement {
@@ -242,9 +242,7 @@ enum WindowSupport {
     }
 
     static func minimizeFrontmostWindow() throws -> [String: Any] {
-        guard isAccessibilityTrusted() else {
-            throw CUAError(message: "Accessibility permission is required for window minimize")
-        }
+        try PermissionSupport.require(.accessibility, for: "window minimize")
         guard let window = frontmostWindowAXElement() else {
             throw CUAError(message: "no frontmost window is available")
         }
@@ -256,9 +254,7 @@ enum WindowSupport {
     }
 
     static func maximizeFrontmostWindow() throws -> [String: Any] {
-        guard isAccessibilityTrusted() else {
-            throw CUAError(message: "Accessibility permission is required for window maximize")
-        }
+        try PermissionSupport.require(.accessibility, for: "window maximize")
         guard let window = frontmostWindowAXElement() else {
             throw CUAError(message: "no frontmost window is available")
         }
@@ -273,9 +269,7 @@ enum WindowSupport {
     }
 
     static func closeFrontmostWindow() throws -> [String: Any] {
-        guard isAccessibilityTrusted() else {
-            throw CUAError(message: "Accessibility permission is required for window close")
-        }
+        try PermissionSupport.require(.accessibility, for: "window close")
         guard let window = frontmostWindowAXElement() else {
             throw CUAError(message: "no frontmost window is available")
         }

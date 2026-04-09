@@ -11,10 +11,7 @@ enum ScreenshotTarget {
 
 enum ScreenshotSupport {
     static func screenCaptureAccess() -> Bool {
-        if #available(macOS 10.15, *) {
-            return CGPreflightScreenCaptureAccess()
-        }
-        return true
+        PermissionSupport.isGranted(.screenRecording)
     }
 
     static func ensureDirectory(for path: URL) throws {
@@ -28,6 +25,7 @@ enum ScreenshotSupport {
         coordinateFallback: Bool,
         reportedBounds: CGRect?
     ) throws -> [String: Any] {
+        try PermissionSupport.require(.screenRecording, for: "screenshots")
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard url.path.lowercased().hasSuffix(".png") else {
             throw CUAError(message: "screenshot currently requires a .png output path")
