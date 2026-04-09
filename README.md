@@ -57,7 +57,7 @@ swift run macos-cua window list
 
 ## Notes
 
-- Default `screenshot` captures the frontmost window and returns its bounds in action-space coordinates.
+- Default `screenshot` captures the frontmost window and normalizes the output image to action-space resolution.
 - `--screen` is explicit because full-screen capture is a secondary mode.
 - `window list` is AX-first when Accessibility is available, then falls back to CoreGraphics window discovery.
 - Browser DOM/ref actions are intentionally out of scope for this repo.
@@ -65,3 +65,13 @@ swift run macos-cua window list
 - GitHub Actions can be triggered manually to build release CLI archives for both `arm64` and `x86_64` macOS runners.
 - Pointer movement anti-bot research notes live in [`docs/research/movement-anti-bot.md`](docs/research/movement-anti-bot.md).
 - `move`, `click`, and `double-click` use humanized pointer motion profiles; default is `--fast`, with `--precise` available for tighter target acquisition.
+
+## Screenshot Resolution
+
+- Screenshot output is normalized to logical action-space dimensions, not Retina/native pixel dimensions.
+- This keeps screenshot coordinates aligned with `move`, `click`, and window `bounds` without requiring callers to divide by `scale`.
+- `actionSpace.width` and `actionSpace.height` describe the coordinate system used for input and the default screenshot raster size.
+- For `screenshot --screen`, `image.width` and `image.height` match the main-screen action space.
+- For window screenshots, `image.width` and `image.height` match the captured window `bounds.width` and `bounds.height`.
+- Window screenshots are captured without the macOS drop shadow so the image edges line up with the reported window bounds.
+- Native pixel fidelity is intentionally discarded during screenshot export to preserve direct coordinate compatibility for agent actions.

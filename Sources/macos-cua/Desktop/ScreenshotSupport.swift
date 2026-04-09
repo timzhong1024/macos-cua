@@ -45,6 +45,7 @@ enum ScreenshotSupport {
             throw CUAError(message: message?.isEmpty == false ? message! : "screencapture failed")
         }
 
+        try normalizeToActionSpaceIfNeeded(at: url, target: target)
         let dimensions = try pngDimensions(at: url)
         let actionSpace = try InputSupport.actionSpace()
         return [
@@ -63,7 +64,7 @@ enum ScreenshotSupport {
         switch target {
         case .frontmostWindow:
             if let window = WindowSupport.frontmostWindow(), let id = window.id {
-                return ["-x", "-l", String(id), outputPath]
+                return ["-x", "-o", "-l", String(id), outputPath]
             }
             return ["-x", "-m", outputPath]
         case .screen:
@@ -102,5 +103,57 @@ enum ScreenshotSupport {
             throw CUAError(message: "failed to read screenshot dimensions: \(url.path)")
         }
         return (width, height)
+    }
+
+    static func normalizeToActionSpaceIfNeeded(at url: URL, target: ScreenshotTarget) throws {
+        guard let bounds = bounds(for: target) else { return }
+
+        let targetWidth = Int(bounds.width.rounded())
+        let targetHeight = Int(bounds.height.rounded())
+        guard targetWidth > 0, targetHeight > 0 else { return }
+
+        let current = try pngDimensions(at: url)
+        guard current.width != targetWidth || current.height != targetHeight else { return }
+
+        guard let source = NSImage(contentsOf: url) else {
+            throw CUAError(message: "failed to load screenshot for action-space normalization: \(url.path)")
+        }
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: targetWidth,
+            pixelsHigh: targetHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw CUAError(message: "failed to allocate action-space normalized screenshot buffer: \(url.path)")
+        }
+
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else {
+            throw CUAError(message: "failed to create action-space normalized screenshot context: \(url.path)")
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSGraphicsContext.current?.imageInterpolation = .high
+        source.draw(
+            in: NSRect(x: 0, y: 0, width: targetWidth, height: targetHeight),
+            from: .zero,
+            operation: .copy,
+            fraction: 1.0
+        )
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let pngData = rep.representation(using: .png, properties: [:]) else {
+            throw CUAError(message: "failed to encode action-space normalized screenshot: \(url.path)")
+        }
+
+        try pngData.write(to: url, options: .atomic)
     }
 }
