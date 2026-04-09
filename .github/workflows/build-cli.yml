@@ -28,6 +28,10 @@ jobs:
           swift --version
           uname -a
 
+      - name: Run tests
+        run: |
+          swift test
+
       - name: Build release binary
         run: |
           swift build -c release --product macos-cua
