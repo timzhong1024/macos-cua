@@ -1,0 +1,57 @@
+name: Build CLI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          uname -a
+
+      - name: Build release binary
+        run: |
+          swift build -c release --product macos-cua
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          install -d dist/package
+          install -m 755 "${BIN_DIR}/macos-cua" "dist/package/macos-cua"
+          cp LICENSE README.md dist/package/
+
+      - name: Package archive
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          if [ "${VERSION}" = "${GITHUB_SHA}" ] || [ -z "${VERSION}" ]; then
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          ARCHIVE_BASENAME="macos-cua-${VERSION}-darwin-${{ matrix.arch }}"
+          tar -C dist/package -czf "dist/${ARCHIVE_BASENAME}.tar.gz" .
+          shasum -a 256 "dist/${ARCHIVE_BASENAME}.tar.gz" > "dist/${ARCHIVE_BASENAME}.tar.gz.sha256"
+          echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> "${GITHUB_ENV}"
+
+      - name: Upload packaged CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_BASENAME }}
+          path: |
+            dist/${{ env.ARCHIVE_BASENAME }}.tar.gz
+            dist/${{ env.ARCHIVE_BASENAME }}.tar.gz.sha256
+          if-no-files-found: error

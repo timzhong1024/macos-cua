@@ -62,3 +62,4 @@ swift run macos-cua window list
 - `window list` is AX-first when Accessibility is available, then falls back to CoreGraphics window discovery.
 - Browser DOM/ref actions are intentionally out of scope for this repo.
 - A shareable VS Code debug example lives at `.vscode/launch.example.json`; local `.vscode/launch.json` stays ignored.
+- GitHub Actions can be triggered manually to build release CLI archives for both `arm64` and `x86_64` macOS runners.
