@@ -8,6 +8,7 @@ enum CLI {
     Commands:
       doctor
       state
+      record enable|disable|status
       screenshot [--screen] [--region x y w h] <path.png>
       move <x> <y> [--fast|--precise]
       click <x> <y> [left|right|middle] [--fast|--precise]
@@ -43,35 +44,39 @@ enum CLI {
         }
 
         let output = CLIOutput(json: json)
-        switch command {
-        case "doctor":
-            try doctor(output: output)
-        case "state":
-            try state(output: output)
-        case "screenshot":
-            try screenshot(args: Array(args.dropFirst()), output: output)
-        case "move":
-            try move(args: Array(args.dropFirst()), output: output)
-        case "click":
-            try click(args: Array(args.dropFirst()), output: output, count: 1)
-        case "double-click":
-            try click(args: Array(args.dropFirst()), output: output, count: 2)
-        case "scroll":
-            try scroll(args: Array(args.dropFirst()), output: output)
-        case "keypress":
-            try keypress(args: Array(args.dropFirst()), output: output)
-        case "type":
-            try typeText(args: Array(args.dropFirst()), output: output)
-        case "wait":
-            try wait(args: Array(args.dropFirst()), output: output)
-        case "clipboard":
-            try clipboard(args: Array(args.dropFirst()), output: output)
-        case "app":
-            try app(args: Array(args.dropFirst()), output: output)
-        case "window":
-            try window(args: Array(args.dropFirst()), output: output)
-        default:
-            throw CUAError(message: "unsupported command: \(command)")
+        try Recorder.executeInvocation(arguments: arguments, command: command, output: output) {
+            switch command {
+            case "doctor":
+                try doctor(output: output)
+            case "state":
+                try state(output: output)
+            case "record":
+                try record(args: Array(args.dropFirst()), output: output)
+            case "screenshot":
+                try screenshot(args: Array(args.dropFirst()), output: output)
+            case "move":
+                try move(args: Array(args.dropFirst()), output: output)
+            case "click":
+                try click(args: Array(args.dropFirst()), output: output, count: 1)
+            case "double-click":
+                try click(args: Array(args.dropFirst()), output: output, count: 2)
+            case "scroll":
+                try scroll(args: Array(args.dropFirst()), output: output)
+            case "keypress":
+                try keypress(args: Array(args.dropFirst()), output: output)
+            case "type":
+                try typeText(args: Array(args.dropFirst()), output: output)
+            case "wait":
+                try wait(args: Array(args.dropFirst()), output: output)
+            case "clipboard":
+                try clipboard(args: Array(args.dropFirst()), output: output)
+            case "app":
+                try app(args: Array(args.dropFirst()), output: output)
+            case "window":
+                try window(args: Array(args.dropFirst()), output: output)
+            default:
+                throw CUAError(message: "unsupported command: \(command)")
+            }
         }
     }
 
@@ -179,6 +184,31 @@ enum CLI {
         let bounds = payload["bounds"] as? [String: Any]
         let human = "captured \(payload["target"] as? String ?? "screenshot") to \(rest[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
         try output.emit(payload, human: human)
+    }
+
+    static func record(args: [String], output: CLIOutput) throws {
+        guard let subcommand = args.first, args.count == 1 else {
+            throw CUAError(message: "usage: macos-cua record enable|disable|status")
+        }
+        switch subcommand {
+        case "enable":
+            let payload = try Recorder.enable()
+            let path = payload["sessionPath"] as? String ?? "n/a"
+            let alreadyEnabled = payload["alreadyEnabled"] as? Bool == true
+            try output.emit(payload, human: alreadyEnabled ? "recording already enabled: \(path)" : "recording enabled: \(path)")
+        case "disable":
+            let payload = try Recorder.disable()
+            let path = payload["lastSessionPath"] as? String ?? "n/a"
+            let alreadyDisabled = payload["alreadyDisabled"] as? Bool == true
+            try output.emit(payload, human: alreadyDisabled ? "recording already disabled" : "recording disabled: \(path)")
+        case "status":
+            let payload = try Recorder.status()
+            let enabled = payload["enabled"] as? Bool == true
+            let path = (payload["currentSessionPath"] as? String) ?? (payload["lastSessionPath"] as? String) ?? "n/a"
+            try output.emit(payload, human: enabled ? "recording enabled: \(path)" : "recording disabled: \(path)")
+        default:
+            throw CUAError(message: "unsupported record command: \(subcommand)")
+        }
     }
 
     static func move(args: [String], output: CLIOutput) throws {
