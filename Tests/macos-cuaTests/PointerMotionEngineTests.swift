@@ -36,8 +36,13 @@ final class PointerMotionEngineTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(plan.samples.last?.point.x, target.x, accuracy: 0.0001)
-        XCTAssertEqual(plan.samples.last?.point.y, target.y, accuracy: 0.0001)
+        guard let lastPoint = plan.samples.last?.point else {
+            XCTFail("Expected at least one sampled point")
+            return
+        }
+
+        XCTAssertEqual(lastPoint.x, target.x, accuracy: 0.0001)
+        XCTAssertEqual(lastPoint.y, target.y, accuracy: 0.0001)
     }
 
     func testIntervalsAreNotUniform() {
