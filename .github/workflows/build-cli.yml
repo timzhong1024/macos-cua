@@ -46,6 +46,7 @@ jobs:
           if [ "${VERSION}" = "${GITHUB_SHA}" ] || [ -z "${VERSION}" ]; then
             VERSION="dev-${GITHUB_SHA::7}"
           fi
+          VERSION="${VERSION//\//-}"
           ARCHIVE_BASENAME="macos-cua-${VERSION}-darwin-${{ matrix.arch }}"
           tar -C dist/package -czf "dist/${ARCHIVE_BASENAME}.tar.gz" .
           shasum -a 256 "dist/${ARCHIVE_BASENAME}.tar.gz" > "dist/${ARCHIVE_BASENAME}.tar.gz.sha256"
