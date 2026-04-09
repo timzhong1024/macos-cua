@@ -99,7 +99,7 @@ final class PointerMotionEngineTests: XCTestCase {
             )
         )
 
-        XCTAssertLessThan(terminalSpread(of: precise), terminalSpread(of: fast))
+        XCTAssertLessThan(terminalRadius(of: precise), terminalRadius(of: fast))
     }
 
     func testDoubleClickDelayFallsWithinProfileRange() {
@@ -136,9 +136,9 @@ final class PointerMotionEngineTests: XCTestCase {
         return denominator > 0 ? numerator / denominator : 0
     }
 
-    private func terminalSpread(of plan: PointerMotionPlan) -> Double {
+    private func terminalRadius(of plan: PointerMotionPlan) -> Double {
         guard let target = plan.samples.last?.point else { return .infinity }
         let tail = plan.samples.suffix(4)
-        return tail.map { hypot($0.point.x - target.x, $0.point.y - target.y) }.reduce(0, +)
+        return tail.map { hypot($0.point.x - target.x, $0.point.y - target.y) }.max() ?? .infinity
     }
 }
