@@ -1,7 +1,11 @@
 import Foundation
 
-struct CUAError: Error {
+struct CUAError: Error, LocalizedError {
     let message: String
+
+    var errorDescription: String? {
+        message
+    }
 }
 
 @discardableResult

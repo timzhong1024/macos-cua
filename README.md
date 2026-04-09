@@ -24,6 +24,7 @@ macos-cua [--json] <command> [args...]
 
 doctor
 state
+record enable|disable|status
 screenshot [--screen] [--region x y w h] <path.png>
 move <x> <y> [--fast|--precise]
 click <x> <y> [left|right|middle] [--fast|--precise]
@@ -41,6 +42,7 @@ window frontmost|list|activate|minimize|maximize|close
 
 ```bash
 swift run macos-cua doctor
+swift run macos-cua record enable
 swift run macos-cua --json state
 swift run macos-cua screenshot /tmp/frontmost.png
 swift run macos-cua screenshot --screen /tmp/screen.png
@@ -61,6 +63,7 @@ swift run macos-cua window list
 - `--screen` is explicit because full-screen capture is a secondary mode.
 - `window list` is AX-first when Accessibility is available, then falls back to CoreGraphics window discovery.
 - Browser DOM/ref actions are intentionally out of scope for this repo.
+- `record enable` starts a persistent session under `~/Library/Application Support/macos-cua/records/`; each subsequent command appends an action log entry, a full-screen timeline screenshot, failure-only snapshots, and a replayable `replay.sh` trace until `record disable`.
 - A shareable VS Code debug example lives at `.vscode/launch.example.json`; local `.vscode/launch.json` stays ignored.
 - GitHub Actions can be triggered manually to build release CLI archives for both `arm64` and `x86_64` macOS runners.
 - Pointer movement anti-bot research notes live in [`docs/research/movement-anti-bot.md`](docs/research/movement-anti-bot.md).
