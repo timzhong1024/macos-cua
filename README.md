@@ -63,3 +63,4 @@ swift run macos-cua window list
 - Browser DOM/ref actions are intentionally out of scope for this repo.
 - A shareable VS Code debug example lives at `.vscode/launch.example.json`; local `.vscode/launch.json` stays ignored.
 - GitHub Actions can be triggered manually to build release CLI archives for both `arm64` and `x86_64` macOS runners.
+- Pointer movement anti-bot research notes live in [`docs/research/movement-anti-bot.md`](docs/research/movement-anti-bot.md).
