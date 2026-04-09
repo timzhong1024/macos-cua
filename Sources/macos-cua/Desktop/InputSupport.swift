@@ -91,28 +91,30 @@ enum InputSupport {
         ]
     }
 
-    static func moveMouse(to point: CGPoint, durationMs: Int?) throws {
-        let start = currentPointer()
-        let duration = max(0, durationMs ?? 0)
-        if duration == 0 {
-            try post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
-            return
-        }
-        let stepCount = max(2, duration / 12)
-        for step in 1...stepCount {
-            let t = Double(step) / Double(stepCount)
-            let eased = t * t * (3.0 - 2.0 * t)
-            let next = CGPoint(
-                x: start.x + (point.x - start.x) * eased,
-                y: start.y + (point.y - start.y) * eased
-            )
-            try post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: next, mouseButton: .left))
-            usleep(useconds_t((Double(duration) / Double(stepCount)) * 1_000.0))
-        }
+    static func sendMouseMove(to point: CGPoint) throws {
+        try post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     }
 
-    static func click(point: CGPoint, button: MouseButtonName, count: Int) throws {
-        try moveMouse(to: point, durationMs: nil)
+    static func performMotion(to point: CGPoint, profile: PointerMotionProfile, kind: PointerMotionKind, seed: UInt64? = nil) throws -> PointerMotionPlan {
+        let request = PointerMotionRequest(
+            start: currentPointer(),
+            end: point,
+            profile: profile,
+            kind: kind,
+            seed: seed
+        )
+        let plan = PointerMotionEngine.buildPlan(request)
+        for sample in plan.samples {
+            try sendMouseMove(to: sample.point)
+            if sample.delayMicros > 0 {
+                usleep(sample.delayMicros)
+            }
+        }
+        return plan
+    }
+
+    static func click(point: CGPoint, button: MouseButtonName, count: Int, profile: PointerMotionProfile, seed: UInt64? = nil) throws {
+        let plan = try performMotion(to: point, profile: profile, kind: count == 2 ? .doubleClick : .click, seed: seed)
         for clickIndex in 1...count {
             let down = CGEvent(mouseEventSource: nil, mouseType: button.downType, mouseCursorPosition: point, mouseButton: button.cgButton)
             down?.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
@@ -121,7 +123,7 @@ enum InputSupport {
             up?.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
             try post(up)
             if clickIndex < count {
-                usleep(75_000)
+                usleep(plan.interClickDelayMicros ?? 75_000)
             }
         }
     }

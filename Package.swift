@@ -12,5 +12,9 @@ let package = Package(
         .executableTarget(
             name: "macos-cua"
         ),
+        .testTarget(
+            name: "macos-cuaTests",
+            dependencies: ["macos-cua"]
+        ),
     ]
 )

@@ -9,9 +9,9 @@ enum CLI {
       doctor
       state
       screenshot [--screen] [--region x y w h] <path.png>
-      move <x> <y> [--duration-ms N]
-      click <x> <y> [left|right|middle]
-      double-click <x> <y> [left|right|middle]
+      move <x> <y> [--fast|--precise]
+      click <x> <y> [left|right|middle] [--fast|--precise]
+      double-click <x> <y> [left|right|middle] [--fast|--precise]
       scroll <dx> <dy>
       keypress <key[+key...]>
       type [--fast] <text>
@@ -23,6 +23,7 @@ enum CLI {
     Notes:
       Coordinates are always in the logical main-screen action space.
       Screenshot defaults to the frontmost window. Use --screen for full screen.
+      Pointer movement defaults to the fast humanized profile.
     """
 
     static func run(arguments: [String]) throws {
@@ -181,36 +182,32 @@ enum CLI {
     }
 
     static func move(args: [String], output: CLIOutput) throws {
-        guard args.count == 2 || args.count == 4 else {
-            throw CUAError(message: "usage: macos-cua move <x> <y> [--duration-ms N]")
+        let (rest, profile) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--fast|--precise]")
+        guard rest.count == 2 else {
+            throw CUAError(message: "usage: macos-cua move <x> <y> [--fast|--precise]")
         }
-        let x = try parseInt(args[0], name: "x")
-        let y = try parseInt(args[1], name: "y")
-        var duration: Int?
-        if args.count == 4 {
-            guard args[2] == "--duration-ms" else {
-                throw CUAError(message: "usage: macos-cua move <x> <y> [--duration-ms N]")
-            }
-            duration = try parseInt(args[3], name: "duration")
-        }
-        try InputSupport.moveMouse(to: CGPoint(x: x, y: y), durationMs: duration)
+        let x = try parseInt(rest[0], name: "x")
+        let y = try parseInt(rest[1], name: "y")
+        _ = try InputSupport.performMotion(to: CGPoint(x: x, y: y), profile: profile, kind: .move)
         try output.emit(
-            ["x": x, "y": y, "durationMs": duration as Any],
-            human: "moved pointer to \(x),\(y)"
+            ["x": x, "y": y, "profile": profile.rawValue],
+            human: "moved pointer to \(x),\(y) [\(profile.rawValue)]"
         )
     }
 
     static func click(args: [String], output: CLIOutput, count: Int) throws {
-        guard (2...3).contains(args.count) else {
-            throw CUAError(message: "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle]")
+        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--fast|--precise]"
+        let (rest, profile) = try parsePointerProfile(args, usage: usage)
+        guard (2...3).contains(rest.count) else {
+            throw CUAError(message: usage)
         }
-        let x = try parseInt(args[0], name: "x")
-        let y = try parseInt(args[1], name: "y")
-        let button = try InputSupport.mouseButton(named: args.count == 3 ? args[2] : "left")
-        try InputSupport.click(point: CGPoint(x: x, y: y), button: button, count: count)
+        let x = try parseInt(rest[0], name: "x")
+        let y = try parseInt(rest[1], name: "y")
+        let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
+        try InputSupport.click(point: CGPoint(x: x, y: y), button: button, count: count, profile: profile)
         try output.emit(
-            ["x": x, "y": y, "button": button.rawValue, "count": count],
-            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y)"
+            ["x": x, "y": y, "button": button.rawValue, "count": count, "profile": profile.rawValue],
+            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(profile.rawValue)]"
         )
     }
 
@@ -343,5 +340,33 @@ enum CLI {
         default:
             throw CUAError(message: "unsupported window command: \(subcommand)")
         }
+    }
+
+    static func parsePointerProfile(_ args: [String], usage: String) throws -> ([String], PointerMotionProfile) {
+        var rest: [String] = []
+        var selected: PointerMotionProfile = .fast
+        var explicit = false
+
+        for arg in args {
+            switch arg {
+            case "--fast":
+                if explicit && selected != .fast {
+                    throw CUAError(message: usage)
+                }
+                selected = .fast
+                explicit = true
+            case "--precise":
+                if explicit && selected != .precise {
+                    throw CUAError(message: usage)
+                }
+                selected = .precise
+                explicit = true
+            case "--duration-ms":
+                throw CUAError(message: "move --duration-ms has been removed; use --fast or --precise")
+            default:
+                rest.append(arg)
+            }
+        }
+        return (rest, selected)
     }
 }
