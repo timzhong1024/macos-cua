@@ -79,7 +79,12 @@ enum InputSupport {
     }
 
     static func currentPointer() -> CGPoint {
-        NSEvent.mouseLocation
+        let point = NSEvent.mouseLocation
+        guard let screen = NSScreen.main else {
+            return point
+        }
+        // Normalize to the same top-left screen space used by screenshots and CGEvent mouse positions.
+        return CGPoint(x: point.x, y: screen.frame.height - point.y)
     }
 
     static func actionSpace() throws -> [String: Any] {

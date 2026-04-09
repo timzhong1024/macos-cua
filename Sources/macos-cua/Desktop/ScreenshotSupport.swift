@@ -21,7 +21,13 @@ enum ScreenshotSupport {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
     }
 
-    static func capture(target: ScreenshotTarget, path: String) throws -> [String: Any] {
+    static func capture(
+        target: ScreenshotTarget,
+        path: String,
+        coordinateSpace: CoordinateSpaceName,
+        coordinateFallback: Bool,
+        reportedBounds: CGRect?
+    ) throws -> [String: Any] {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard url.path.lowercased().hasSuffix(".png") else {
             throw CUAError(message: "screenshot currently requires a .png output path")
@@ -51,7 +57,9 @@ enum ScreenshotSupport {
         return [
             "path": url.path,
             "target": targetName(target),
-            "bounds": bounds(for: target).map(rectJSON) as Any,
+            "bounds": reportedBounds.map(rectJSON) as Any,
+            "coordinateSpace": coordinateSpace.rawValue,
+            "coordinateFallback": coordinateFallback,
             "image": [
                 "width": dimensions.width,
                 "height": dimensions.height,
@@ -63,8 +71,12 @@ enum ScreenshotSupport {
     static func arguments(for target: ScreenshotTarget, outputPath: String) -> [String] {
         switch target {
         case .frontmostWindow:
-            if let window = WindowSupport.frontmostWindow(), let id = window.id {
-                return ["-x", "-o", "-l", String(id), outputPath]
+            if let window = WindowSupport.frontmostWindow() {
+                if let id = window.id {
+                    return ["-x", "-o", "-l", String(id), outputPath]
+                }
+                let region = "\(Int(window.bounds.origin.x.rounded())),\(Int(window.bounds.origin.y.rounded())),\(Int(window.bounds.size.width.rounded())),\(Int(window.bounds.size.height.rounded()))"
+                return ["-x", "-R\(region)", outputPath]
             }
             return ["-x", "-m", outputPath]
         case .screen:
@@ -88,11 +100,15 @@ enum ScreenshotSupport {
         case .frontmostWindow:
             return WindowSupport.frontmostWindow()?.bounds
         case .screen:
-            guard let screen = NSScreen.main else { return nil }
-            return CGRect(origin: .zero, size: screen.frame.size)
+            return screenBounds()
         case .region(let rect):
             return rect
         }
+    }
+
+    static func screenBounds() -> CGRect? {
+        guard let screen = NSScreen.main else { return nil }
+        return CGRect(origin: .zero, size: screen.frame.size)
     }
 
     static func pngDimensions(at url: URL) throws -> (width: Int, height: Int) {

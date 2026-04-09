@@ -10,9 +10,9 @@ enum CLI {
       state
       record enable|disable|status
       screenshot [--screen] [--region x y w h] <path.png>
-      move <x> <y> [--fast|--precise]
-      click <x> <y> [left|right|middle] [--fast|--precise]
-      double-click <x> <y> [left|right|middle] [--fast|--precise]
+      move <x> <y> [--screen] [--fast|--precise]
+      click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
+      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
       scroll <dx> <dy>
       keypress <key[+key...]>
       type [--fast] <text>
@@ -22,8 +22,9 @@ enum CLI {
       window frontmost|list|activate|minimize|maximize|close
 
     Notes:
-      Coordinates are always in the logical main-screen action space.
-      Screenshot defaults to the frontmost window. Use --screen for full screen.
+      Coordinates default to the frontmost-window coordinate space.
+      Use --screen to interpret coordinates in main-screen space.
+      Window bounds remain reported in screen-global coordinates.
       Pointer movement defaults to the fast humanized profile.
     """
 
@@ -93,7 +94,13 @@ enum CLI {
         if screenRecording {
             let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("macos-cua-doctor-\(UUID().uuidString).png")
             do {
-                _ = try ScreenshotSupport.capture(target: .frontmostWindow, path: tempPath.path)
+                _ = try ScreenshotSupport.capture(
+                    target: .screen,
+                    path: tempPath.path,
+                    coordinateSpace: .screen,
+                    coordinateFallback: false,
+                    reportedBounds: ScreenshotSupport.screenBounds()
+                )
                 screenshotCheck = ["ok": true, "path": tempPath.path]
                 try? FileManager.default.removeItem(at: tempPath)
             } catch {
@@ -124,17 +131,25 @@ enum CLI {
     }
 
     static func state(output: CLIOutput) throws {
-        let pointer = InputSupport.currentPointer()
+        let pointerScreen = InputSupport.currentPointer()
+        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: false)
+        let pointerWindow = coordinateResolution.localPointer(fromScreenPoint: pointerScreen)
         let modifiers = InputSupport.currentModifierNames()
         let mouseButtons = InputSupport.currentMouseButtons()
         let frontmostApp = AppSupport.frontmostApplication().map(AppSupport.record(for:))?.json
         let frontmostWindow = WindowSupport.frontmostWindow()?.json
+        let pointerWindowLine = pointerWindow.map {
+            "\(Int($0.x.rounded())),\(Int($0.y.rounded()))"
+        } ?? "n/a"
         var releaseHints: [String] = []
         releaseHints.append(contentsOf: modifiers.map { "release key \($0)" })
         releaseHints.append(contentsOf: mouseButtons.map { "release mouse \($0)" })
 
         let payload: [String: Any] = [
-            "pointer": ["x": Int(pointer.x.rounded()), "y": Int(pointer.y.rounded())],
+            "defaultCoordinateSpace": coordinateResolution.coordinateSpace.rawValue,
+            "defaultCoordinateFallback": coordinateResolution.coordinateFallback,
+            "pointerScreen": CoordinateSupport.pointJSON(pointerScreen),
+            "pointerWindow": pointerWindow.map(CoordinateSupport.pointJSON) as Any,
             "held": [
                 "modifiers": modifiers,
                 "mouseButtons": mouseButtons,
@@ -147,7 +162,9 @@ enum CLI {
         try output.emit(
             payload,
             lines: [
-                "Pointer: \(Int(pointer.x.rounded())),\(Int(pointer.y.rounded()))",
+                "Default coordinates: \(coordinateSpaceSummary(for: coordinateResolution))",
+                "Pointer (screen): \(Int(pointerScreen.x.rounded())),\(Int(pointerScreen.y.rounded()))",
+                "Pointer (window): \(pointerWindowLine)",
                 "Held modifiers: \(modifiers.isEmpty ? "none" : modifiers.joined(separator: ", "))",
                 "Held mouse buttons: \(mouseButtons.isEmpty ? "none" : mouseButtons.joined(separator: ", "))",
                 "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
@@ -160,29 +177,32 @@ enum CLI {
         guard !args.isEmpty else {
             throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
         }
-        var target = ScreenshotTarget.frontmostWindow
-        var rest = args
-        if rest.first == "--screen" {
-            target = .screen
-            rest.removeFirst()
-        } else if rest.first == "--region" {
-            guard rest.count >= 6 else {
-                throw CUAError(message: "usage: macos-cua screenshot --region x y w h <path.png>")
-            }
-            let x = try parseInt(rest[1], name: "x")
-            let y = try parseInt(rest[2], name: "y")
-            let w = try parseInt(rest[3], name: "width")
-            let h = try parseInt(rest[4], name: "height")
-            target = .region(CGRect(x: x, y: y, width: w, height: h))
-            rest = Array(rest.dropFirst(5))
-        }
-        guard rest.count == 1 else {
+        let options = try parseScreenshotOptions(args)
+        guard options.remaining.count == 1 else {
             throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
         }
-        let payload = try ScreenshotSupport.capture(target: target, path: rest[0])
+        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: options.explicitScreen)
+        let target: ScreenshotTarget
+        if let region = options.region {
+            target = .region(coordinateResolution.translate(rect: region))
+        } else if coordinateResolution.coordinateSpace == .window {
+            target = .frontmostWindow
+        } else {
+            target = .screen
+        }
+        let reportedBounds = coordinateResolution.screenshotBounds(
+            for: options.region.map(ScreenshotTarget.region) ?? target
+        )
+        let payload = try ScreenshotSupport.capture(
+            target: target,
+            path: options.remaining[0],
+            coordinateSpace: coordinateResolution.coordinateSpace,
+            coordinateFallback: coordinateResolution.coordinateFallback,
+            reportedBounds: reportedBounds
+        )
         let image = payload["image"] as? [String: Any]
         let bounds = payload["bounds"] as? [String: Any]
-        let human = "captured \(payload["target"] as? String ?? "screenshot") to \(rest[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
+        let human = "captured \(payload["target"] as? String ?? "screenshot") to \(options.remaining[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), \(coordinateSpaceSummary(for: coordinateResolution)), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
         try output.emit(payload, human: human)
     }
 
@@ -212,32 +232,54 @@ enum CLI {
     }
 
     static func move(args: [String], output: CLIOutput) throws {
-        let (rest, profile) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--fast|--precise]")
+        let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         guard rest.count == 2 else {
-            throw CUAError(message: "usage: macos-cua move <x> <y> [--fast|--precise]")
+            throw CUAError(message: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
-        _ = try InputSupport.performMotion(to: CGPoint(x: x, y: y), profile: profile, kind: .move)
+        let requestedPoint = CGPoint(x: x, y: y)
+        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
+        let screenPoint = coordinateResolution.translate(point: requestedPoint)
+        _ = try InputSupport.performMotion(to: screenPoint, profile: profile, kind: .move)
         try output.emit(
-            ["x": x, "y": y, "profile": profile.rawValue],
-            human: "moved pointer to \(x),\(y) [\(profile.rawValue)]"
+            [
+                "x": x,
+                "y": y,
+                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
+                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
+                "coordinateFallback": coordinateResolution.coordinateFallback,
+                "profile": profile.rawValue,
+            ],
+            human: "moved pointer to \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
         )
     }
 
     static func click(args: [String], output: CLIOutput, count: Int) throws {
-        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--fast|--precise]"
-        let (rest, profile) = try parsePointerProfile(args, usage: usage)
+        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise]"
+        let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: usage)
         guard (2...3).contains(rest.count) else {
             throw CUAError(message: usage)
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
         let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
-        try InputSupport.click(point: CGPoint(x: x, y: y), button: button, count: count, profile: profile)
+        let requestedPoint = CGPoint(x: x, y: y)
+        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
+        let screenPoint = coordinateResolution.translate(point: requestedPoint)
+        try InputSupport.click(point: screenPoint, button: button, count: count, profile: profile)
         try output.emit(
-            ["x": x, "y": y, "button": button.rawValue, "count": count, "profile": profile.rawValue],
-            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(profile.rawValue)]"
+            [
+                "x": x,
+                "y": y,
+                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
+                "button": button.rawValue,
+                "count": count,
+                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
+                "coordinateFallback": coordinateResolution.coordinateFallback,
+                "profile": profile.rawValue,
+            ],
+            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
         )
     }
 
@@ -372,10 +414,11 @@ enum CLI {
         }
     }
 
-    static func parsePointerProfile(_ args: [String], usage: String) throws -> ([String], PointerMotionProfile) {
+    static func parsePointerProfile(_ args: [String], usage: String) throws -> ([String], PointerMotionProfile, Bool) {
         var rest: [String] = []
         var selected: PointerMotionProfile = .fast
         var explicit = false
+        var explicitScreen = false
 
         for arg in args {
             switch arg {
@@ -391,12 +434,54 @@ enum CLI {
                 }
                 selected = .precise
                 explicit = true
+            case "--screen":
+                if explicitScreen {
+                    throw CUAError(message: usage)
+                }
+                explicitScreen = true
             case "--duration-ms":
                 throw CUAError(message: "move --duration-ms has been removed; use --fast or --precise")
             default:
                 rest.append(arg)
             }
         }
-        return (rest, selected)
+        return (rest, selected, explicitScreen)
+    }
+
+    static func parseScreenshotOptions(_ args: [String]) throws -> (remaining: [String], explicitScreen: Bool, region: CGRect?) {
+        var remaining: [String] = []
+        var explicitScreen = false
+        var region: CGRect?
+        var index = 0
+
+        while index < args.count {
+            switch args[index] {
+            case "--screen":
+                guard !explicitScreen else {
+                    throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
+                }
+                explicitScreen = true
+                index += 1
+            case "--region":
+                guard region == nil, index + 4 < args.count else {
+                    throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
+                }
+                let x = try parseInt(args[index + 1], name: "x")
+                let y = try parseInt(args[index + 2], name: "y")
+                let w = try parseInt(args[index + 3], name: "width")
+                let h = try parseInt(args[index + 4], name: "height")
+                region = CGRect(x: x, y: y, width: w, height: h)
+                index += 5
+            default:
+                remaining.append(args[index])
+                index += 1
+            }
+        }
+
+        return (remaining, explicitScreen, region)
+    }
+
+    static func coordinateSpaceSummary(for resolution: CoordinateResolution) -> String {
+        resolution.coordinateFallback ? "\(resolution.coordinateSpace.rawValue) fallback" : resolution.coordinateSpace.rawValue
     }
 }
