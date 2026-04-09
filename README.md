@@ -61,3 +61,4 @@ swift run macos-cua window list
 - `--screen` is explicit because full-screen capture is a secondary mode.
 - `window list` is AX-first when Accessibility is available, then falls back to CoreGraphics window discovery.
 - Browser DOM/ref actions are intentionally out of scope for this repo.
+- A shareable VS Code debug example lives at `.vscode/launch.example.json`; local `.vscode/launch.json` stays ignored.

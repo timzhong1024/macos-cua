@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "name": "Debug macos-cua",
+      "target": "macos-cua",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug macos-cua"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "name": "Release macos-cua",
+      "target": "macos-cua",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release macos-cua"
+    }
+  ]
+}
