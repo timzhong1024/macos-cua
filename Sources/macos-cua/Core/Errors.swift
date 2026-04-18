@@ -23,7 +23,7 @@ func fail(_ message: String) -> Never {
 
 func parseInt(_ raw: String, name: String) throws -> Int {
     guard let value = Int(raw) else {
-        throw CUAError(message: "invalid \(name): \(raw)")
+        throw CUAError(message: "invalid \(name): \(raw) (expected integer)")
     }
     return value
 }

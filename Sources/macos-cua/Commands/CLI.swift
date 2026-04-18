@@ -268,6 +268,9 @@ enum CLI {
         let target: ScreenshotTarget
         let reportedTarget: ScreenshotTarget
         if let region = options.region {
+            if relative {
+                try validateRelativeRegion(region)
+            }
             let absoluteRegion = relative
                 ? CoordinateSupport.denormalize(region, resolution: coordinateResolution)
                 : region
@@ -332,6 +335,9 @@ enum CLI {
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
+        if relative {
+            try validateRelativePoint(x: x, y: y)
+        }
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
         let inputPoint = CGPoint(x: x, y: y)
         let localPoint = relative
@@ -362,6 +368,9 @@ enum CLI {
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
+        if relative {
+            try validateRelativePoint(x: x, y: y)
+        }
         let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
         let inputPoint = CGPoint(x: x, y: y)
@@ -583,6 +592,35 @@ enum CLI {
         }
 
         return (remaining, explicitScreen, region)
+    }
+
+    static func validateRelativePoint(x: Int, y: Int) throws {
+        try validateRelativeValue(x, name: "x")
+        try validateRelativeValue(y, name: "y")
+    }
+
+    static func validateRelativeRegion(_ region: CGRect) throws {
+        let x = Int(region.origin.x.rounded())
+        let y = Int(region.origin.y.rounded())
+        let width = Int(region.width.rounded())
+        let height = Int(region.height.rounded())
+        try validateRelativeValue(x, name: "x")
+        try validateRelativeValue(y, name: "y")
+        try validateRelativeValue(width, name: "width")
+        try validateRelativeValue(height, name: "height")
+
+        if x + width > 1000 {
+            throw CUAError(message: "--relative requires integer coordinates in [0, 1000]; got x + width = \(x + width) (x=\(x), width=\(width))")
+        }
+        if y + height > 1000 {
+            throw CUAError(message: "--relative requires integer coordinates in [0, 1000]; got y + height = \(y + height) (y=\(y), height=\(height))")
+        }
+    }
+
+    static func validateRelativeValue(_ value: Int, name: String) throws {
+        guard (0...1000).contains(value) else {
+            throw CUAError(message: "--relative requires integer coordinates in [0, 1000]; got \(name)=\(value)")
+        }
     }
 
     static func coordinateSpaceSummary(for resolution: CoordinateResolution) -> String {
