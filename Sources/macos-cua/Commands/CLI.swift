@@ -27,8 +27,9 @@ enum CLI {
       Use --screen to interpret coordinates in main-screen space.
       Window bounds remain reported in screen-global coordinates.
       Pointer movement defaults to the fast humanized profile.
-      --relative: express all action coordinates as integers in [0, 1000]
-        relative to the active coordinate space; 1000 maps to full width or height.
+      Prefer absolute coordinates first.
+      --relative is a fallback mode: it interprets all action coordinates as
+        integers in [0, 1000] relative to the active coordinate space.
     """
 
     static func run(arguments: [String]) throws {
@@ -265,18 +266,22 @@ enum CLI {
         }
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: options.explicitScreen)
         let target: ScreenshotTarget
+        let reportedTarget: ScreenshotTarget
         if let region = options.region {
             let absoluteRegion = relative
                 ? CoordinateSupport.denormalize(region, resolution: coordinateResolution)
                 : region
             target = .region(coordinateResolution.translate(rect: absoluteRegion))
+            reportedTarget = .region(absoluteRegion)
         } else if coordinateResolution.coordinateSpace == .window {
             target = .frontmostWindow
+            reportedTarget = target
         } else {
             target = .screen
+            reportedTarget = target
         }
         let absoluteBounds = coordinateResolution.screenshotBounds(
-            for: options.region.map(ScreenshotTarget.region) ?? target
+            for: reportedTarget
         )
         let reportedBounds = relative
             ? absoluteBounds.map { CoordinateSupport.normalize($0, resolution: coordinateResolution) }

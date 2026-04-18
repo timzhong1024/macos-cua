@@ -72,13 +72,6 @@ enum CoordinateSupport {
         }
     }
 
-    // Convert a [0, 1000] relative point to an absolute point in the resolution's local space.
-    static func denormalize(_ relative: CGPoint, resolution: CoordinateResolution) -> CGPoint {
-        let ref = referenceSize(for: resolution)
-        guard ref.width > 0, ref.height > 0 else { return .zero }
-        return CGPoint(x: relative.x * ref.width / 1000, y: relative.y * ref.height / 1000)
-    }
-
     // Convert a [0, 1000] relative rect (origin + size all relative) to absolute local space.
     static func denormalize(_ relative: CGRect, resolution: CoordinateResolution) -> CGRect {
         let ref = referenceSize(for: resolution)
@@ -89,6 +82,13 @@ enum CoordinateSupport {
             width: relative.width * ref.width / 1000,
             height: relative.height * ref.height / 1000
         )
+    }
+
+    // Convert a [0, 1000] relative point to an absolute point in the resolution's local space.
+    static func denormalize(_ relative: CGPoint, resolution: CoordinateResolution) -> CGPoint {
+        let ref = referenceSize(for: resolution)
+        guard ref.width > 0, ref.height > 0 else { return .zero }
+        return CGPoint(x: relative.x * ref.width / 1000, y: relative.y * ref.height / 1000)
     }
 
     // Convert an absolute local-space point to [0, 1000] relative.
