@@ -17,7 +17,7 @@ It is designed around three defaults:
 
 Use `macos-cua doctor` to inspect current readiness.
 
-Use `macos-cua onboard` to trigger the native prompts, open the relevant System Settings panes, and guide a human through granting both permissions. In a tty session it waits by default; in non-tty mode it triggers the flow and returns immediately unless you pass `--wait`.
+Use `macos-cua onboard` to trigger the native prompts, open the relevant System Settings panes, and guide a human through granting both permissions. In a tty session it waits by default; in non-tty mode it triggers the flow and returns immediately unless you pass `--wait`. When Screen Recording appears to have been granted but the process has not yet been restarted, `onboard` surfaces a targeted restart hint rather than a generic enable instruction. Add `--json` for structured output including per-permission `granted`, `waited`, and `likelyNeedsRestart` fields.
 
 ## Commands
 
