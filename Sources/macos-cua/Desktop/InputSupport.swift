@@ -72,6 +72,7 @@ enum InputSupport {
     }
 
     static func post(_ event: CGEvent?) throws {
+        try PermissionSupport.require(.accessibility, for: "synthetic input")
         guard let event else {
             throw CUAError(message: "failed to create CGEvent")
         }

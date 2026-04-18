@@ -60,7 +60,13 @@ struct RecorderEnvironment {
         return payload
     }
     var captureScreenshot: (_ target: ScreenshotTarget, _ path: String) throws -> [String: Any] = { target, path in
-        try ScreenshotSupport.capture(target: target, path: path)
+        try ScreenshotSupport.capture(
+            target: target,
+            path: path,
+            coordinateSpace: .screen,
+            coordinateFallback: false,
+            reportedBounds: ScreenshotSupport.bounds(for: target)
+        )
     }
 }
 

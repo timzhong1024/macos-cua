@@ -6,6 +6,7 @@ enum CLI {
       macos-cua [--json] <command> [args...]
 
     Commands:
+      onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
       doctor
       state
       record enable|disable|status
@@ -47,6 +48,8 @@ enum CLI {
         let output = CLIOutput(json: json)
         try Recorder.executeInvocation(arguments: arguments, command: command, output: output) {
             switch command {
+            case "onboard", "onboarding":
+                try onboard(args: Array(args.dropFirst()), output: output)
             case "doctor":
                 try doctor(output: output)
             case "state":
@@ -81,6 +84,60 @@ enum CLI {
         }
     }
 
+    static func onboard(args: [String], output: CLIOutput) throws {
+        var waitForReady = PermissionSupport.isInteractiveSession()
+        var timeoutSeconds = waitForReady ? 120 : 0
+        var requestPrompt = true
+        var openSettings = true
+        var index = 0
+
+        while index < args.count {
+            switch args[index] {
+            case "--wait":
+                waitForReady = true
+                if timeoutSeconds == 0 {
+                    timeoutSeconds = 120
+                }
+                index += 1
+            case "--no-wait":
+                waitForReady = false
+                timeoutSeconds = 0
+                index += 1
+            case "--timeout":
+                guard index + 1 < args.count else {
+                    throw CUAError(message: "usage: macos-cua onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]")
+                }
+                timeoutSeconds = try parseInt(args[index + 1], name: "timeout")
+                if timeoutSeconds < 0 {
+                    throw CUAError(message: "timeout must be >= 0")
+                }
+                waitForReady = timeoutSeconds > 0
+                index += 2
+            case "--no-request":
+                requestPrompt = false
+                index += 1
+            case "--no-open":
+                openSettings = false
+                index += 1
+            default:
+                throw CUAError(message: "usage: macos-cua onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]")
+            }
+        }
+
+        let progress: ((String) -> Void)? = output.json ? nil : { line in
+            print(line)
+        }
+        let shouldLogProgress = PermissionSupport.isInteractiveSession() && (waitForReady || requestPrompt || openSettings)
+        let result = PermissionSupport.onboarding(
+            requestPrompts: requestPrompt,
+            openSettingsPane: openSettings,
+            waitForReady: waitForReady,
+            timeoutSeconds: timeoutSeconds,
+            log: shouldLogProgress ? progress : nil
+        )
+        try output.emit(result.payload, lines: result.lines)
+    }
+
     static func doctor(output: CLIOutput) throws {
         let accessibility = WindowSupport.isAccessibilityTrusted()
         let screenRecording = ScreenshotSupport.screenCaptureAccess()
@@ -113,20 +170,26 @@ enum CLI {
             "screenRecording": screenRecording,
             "syntheticInputReady": accessibility,
             "screenshotReady": screenshotCheck,
+            "allReady": accessibility && screenRecording,
+            "onboardCommand": "macos-cua onboard",
             "frontmostApp": frontmostApp as Any,
             "frontmostWindow": frontmostWindow as Any,
             "actionSpace": actionSpace,
         ]
+        var lines = [
+            "Accessibility: \(accessibility ? "ready" : "missing")",
+            "Screen Recording: \(screenRecording ? "ready" : "missing")",
+            "Synthetic input: \(accessibility ? "ready" : "missing")",
+            "Screenshot check: \((screenshotCheck["ok"] as? Bool) == true ? "ok" : "failed")",
+            "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
+            "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
+        ]
+        if !accessibility || !screenRecording {
+            lines.append("Next: run `macos-cua onboard` to request missing permissions.")
+        }
         try output.emit(
             payload,
-            lines: [
-                "Accessibility: \(accessibility ? "ready" : "missing")",
-                "Screen Recording: \(screenRecording ? "ready" : "missing")",
-                "Synthetic input: \(accessibility ? "ready" : "missing")",
-                "Screenshot check: \((screenshotCheck["ok"] as? Bool) == true ? "ok" : "failed")",
-                "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
-                "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
-            ]
+            lines: lines
         )
     }
 
