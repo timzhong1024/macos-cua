@@ -90,6 +90,26 @@ swift run macos-cua move 800 400 --screen --precise
 swift run macos-cua click 800 400 --screen --fast
 ```
 
+## Dense UI Fallback
+
+When a page is visually dense and the target is a small icon, URL, or toolbar
+item, treat `screenshot --region` as the fallback inspection step instead of
+guessing a final click from the full screenshot alone.
+
+Recommended pattern:
+
+1. Capture the full frontmost window for global context.
+2. Take a second local crop tightly around the likely target area.
+3. Re-read the local crop, then issue the final click.
+
+Example:
+
+```bash
+swift run macos-cua screenshot /tmp/frontmost.png
+swift run macos-cua screenshot --region 720 88 220 96 /tmp/toolbar-crop.png
+swift run macos-cua click 812 132 --fast
+```
+
 ## Model Resolution
 
 Use absolute coordinates when your screenshot can be consumed at full useful resolution by the model. If the image must be resized or compressed before inference, switch to the relative-mode workflow in the docs.

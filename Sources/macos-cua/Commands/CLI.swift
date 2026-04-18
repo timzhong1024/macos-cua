@@ -26,6 +26,9 @@ enum CLI {
       Coordinates default to the frontmost-window coordinate space.
       Use --screen to interpret coordinates in main-screen space.
       Window bounds remain reported in screen-global coordinates.
+      Use screenshot --region as the fallback for dense pages and small targets.
+      Crop tightly around the likely target area, re-read the local image, then
+        issue the final click.
       Pointer movement defaults to the fast humanized profile.
       Prefer absolute coordinates first.
       --relative is a fallback mode: it interprets all action coordinates as
