@@ -137,6 +137,7 @@ enum PermissionSupport {
 
         let deadline = Date().addingTimeInterval(TimeInterval(max(0, timeoutSeconds)))
 
+        // Phase 1: trigger prompts and open settings for all missing permissions before waiting.
         for kind in PermissionKind.allCases {
             guard var attempt = attempts[kind], !attempt.granted else { continue }
 
@@ -152,20 +153,28 @@ enum PermissionSupport {
                 attempt.openedSettings = openSettings(for: kind)
             }
 
-            if !attempt.granted && waitForReady {
-                attempt.waited = true
-                log?("Waiting for \(kind.displayName) to become ready...")
+            attempts[kind] = attempt
+        }
+
+        // Phase 2: poll all still-missing permissions together so the timeout is shared, not
+        // consumed sequentially (which would starve later permissions of wait time).
+        if waitForReady {
+            let toWait = PermissionKind.allCases.filter { !(attempts[$0]?.granted ?? false) }
+            if !toWait.isEmpty {
+                for kind in toWait { attempts[kind]?.waited = true }
+                log?("Waiting for: \(toWait.map(\.displayName).joined(separator: ", "))...")
                 while Date() < deadline {
-                    if isGranted(kind) {
-                        attempt.granted = true
-                        break
+                    var allGranted = true
+                    for kind in toWait {
+                        if isGranted(kind) {
+                            attempts[kind]?.granted = true
+                        }
+                        if !(attempts[kind]?.granted ?? false) { allGranted = false }
                     }
+                    if allGranted { break }
                     usleep(500_000)
                 }
-                attempt.granted = isGranted(kind)
             }
-
-            attempts[kind] = attempt
         }
 
         for kind in PermissionKind.allCases {
