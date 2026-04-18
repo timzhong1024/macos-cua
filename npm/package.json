@@ -1,0 +1,41 @@
+{
+  "name": "macos-cua",
+  "version": "0.1.0",
+  "description": "macOS 13+ low-level computer-use runtime for agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/timzhong1024/macos-cua.git"
+  },
+  "homepage": "https://github.com/timzhong1024/macos-cua#readme",
+  "bugs": {
+    "url": "https://github.com/timzhong1024/macos-cua/issues"
+  },
+  "bin": {
+    "macos-cua": "bin/macos-cua"
+  },
+  "files": [
+    "bin/macos-cua",
+    "scripts/preinstall.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "scripts": {
+    "preinstall": "node ./scripts/preinstall.js",
+    "prepack": "npm run check",
+    "check": "test -x ./bin/macos-cua"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "macos",
+    "cli",
+    "automation",
+    "computer-use",
+    "agent"
+  ]
+}
