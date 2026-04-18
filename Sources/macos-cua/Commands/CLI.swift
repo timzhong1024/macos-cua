@@ -3,7 +3,7 @@ import Foundation
 enum CLI {
     static let usage = """
     Usage:
-      macos-cua [--json] <command> [args...]
+      macos-cua [--json] [--relative] <command> [args...]
 
     Commands:
       onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
@@ -27,14 +27,26 @@ enum CLI {
       Use --screen to interpret coordinates in main-screen space.
       Window bounds remain reported in screen-global coordinates.
       Pointer movement defaults to the fast humanized profile.
+      --relative: express all action coordinates as integers in [0, 1000]
+        relative to the active coordinate space; 1000 maps to full width or height.
     """
 
     static func run(arguments: [String]) throws {
         var args = arguments
         var json = false
-        if let first = args.first, first == "--json" {
-            json = true
-            args.removeFirst()
+        var relative = false
+        var parsingGlobalFlags = true
+        while parsingGlobalFlags, let first = args.first {
+            switch first {
+            case "--json":
+                json = true
+                args.removeFirst()
+            case "--relative":
+                relative = true
+                args.removeFirst()
+            default:
+                parsingGlobalFlags = false
+            }
         }
         guard let command = args.first else {
             print(usage)
@@ -53,17 +65,17 @@ enum CLI {
             case "doctor":
                 try doctor(output: output)
             case "state":
-                try state(output: output)
+                try state(output: output, relative: relative)
             case "record":
                 try record(args: Array(args.dropFirst()), output: output)
             case "screenshot":
-                try screenshot(args: Array(args.dropFirst()), output: output)
+                try screenshot(args: Array(args.dropFirst()), output: output, relative: relative)
             case "move":
-                try move(args: Array(args.dropFirst()), output: output)
+                try move(args: Array(args.dropFirst()), output: output, relative: relative)
             case "click":
-                try click(args: Array(args.dropFirst()), output: output, count: 1)
+                try click(args: Array(args.dropFirst()), output: output, count: 1, relative: relative)
             case "double-click":
-                try click(args: Array(args.dropFirst()), output: output, count: 2)
+                try click(args: Array(args.dropFirst()), output: output, count: 2, relative: relative)
             case "scroll":
                 try scroll(args: Array(args.dropFirst()), output: output)
             case "keypress":
@@ -193,7 +205,7 @@ enum CLI {
         )
     }
 
-    static func state(output: CLIOutput) throws {
+    static func state(output: CLIOutput, relative: Bool) throws {
         let pointerScreen = InputSupport.currentPointer()
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: false)
         let pointerWindow = coordinateResolution.localPointer(fromScreenPoint: pointerScreen)
@@ -208,7 +220,7 @@ enum CLI {
         releaseHints.append(contentsOf: modifiers.map { "release key \($0)" })
         releaseHints.append(contentsOf: mouseButtons.map { "release mouse \($0)" })
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "defaultCoordinateSpace": coordinateResolution.coordinateSpace.rawValue,
             "defaultCoordinateFallback": coordinateResolution.coordinateFallback,
             "pointerScreen": CoordinateSupport.pointJSON(pointerScreen),
@@ -222,6 +234,13 @@ enum CLI {
             "frontmostWindow": frontmostWindow as Any,
             "actionSpace": try InputSupport.actionSpace(),
         ]
+        if relative {
+            let localPointer = coordinateResolution.coordinateSpace == .window
+                ? (pointerWindow ?? pointerScreen) : pointerScreen
+            let relPointer = CoordinateSupport.normalize(localPointer, resolution: coordinateResolution)
+            payload["pointerRelative"] = CoordinateSupport.pointJSON(relPointer)
+            payload["relative"] = true
+        }
         try output.emit(
             payload,
             lines: [
@@ -236,7 +255,7 @@ enum CLI {
         )
     }
 
-    static func screenshot(args: [String], output: CLIOutput) throws {
+    static func screenshot(args: [String], output: CLIOutput, relative: Bool) throws {
         guard !args.isEmpty else {
             throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
         }
@@ -247,22 +266,29 @@ enum CLI {
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: options.explicitScreen)
         let target: ScreenshotTarget
         if let region = options.region {
-            target = .region(coordinateResolution.translate(rect: region))
+            let absoluteRegion = relative
+                ? CoordinateSupport.denormalize(region, resolution: coordinateResolution)
+                : region
+            target = .region(coordinateResolution.translate(rect: absoluteRegion))
         } else if coordinateResolution.coordinateSpace == .window {
             target = .frontmostWindow
         } else {
             target = .screen
         }
-        let reportedBounds = coordinateResolution.screenshotBounds(
+        let absoluteBounds = coordinateResolution.screenshotBounds(
             for: options.region.map(ScreenshotTarget.region) ?? target
         )
-        let payload = try ScreenshotSupport.capture(
+        let reportedBounds = relative
+            ? absoluteBounds.map { CoordinateSupport.normalize($0, resolution: coordinateResolution) }
+            : absoluteBounds
+        var payload = try ScreenshotSupport.capture(
             target: target,
             path: options.remaining[0],
             coordinateSpace: coordinateResolution.coordinateSpace,
             coordinateFallback: coordinateResolution.coordinateFallback,
             reportedBounds: reportedBounds
         )
+        if relative { payload["relative"] = true }
         let image = payload["image"] as? [String: Any]
         let bounds = payload["bounds"] as? [String: Any]
         let human = "captured \(payload["target"] as? String ?? "screenshot") to \(options.remaining[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), \(coordinateSpaceSummary(for: coordinateResolution)), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
@@ -294,31 +320,36 @@ enum CLI {
         }
     }
 
-    static func move(args: [String], output: CLIOutput) throws {
+    static func move(args: [String], output: CLIOutput, relative: Bool) throws {
         let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         guard rest.count == 2 else {
             throw CUAError(message: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
-        let requestedPoint = CGPoint(x: x, y: y)
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
-        let screenPoint = coordinateResolution.translate(point: requestedPoint)
+        let inputPoint = CGPoint(x: x, y: y)
+        let localPoint = relative
+            ? CoordinateSupport.denormalize(inputPoint, resolution: coordinateResolution)
+            : inputPoint
+        let screenPoint = coordinateResolution.translate(point: localPoint)
         _ = try InputSupport.performMotion(to: screenPoint, profile: profile, kind: .move)
+        var payload: [String: Any] = [
+            "x": x,
+            "y": y,
+            "screenPoint": CoordinateSupport.pointJSON(screenPoint),
+            "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
+            "coordinateFallback": coordinateResolution.coordinateFallback,
+            "profile": profile.rawValue,
+        ]
+        if relative { payload["relative"] = true }
         try output.emit(
-            [
-                "x": x,
-                "y": y,
-                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
-                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
-                "coordinateFallback": coordinateResolution.coordinateFallback,
-                "profile": profile.rawValue,
-            ],
-            human: "moved pointer to \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+            payload,
+            human: "moved pointer to \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
         )
     }
 
-    static func click(args: [String], output: CLIOutput, count: Int) throws {
+    static func click(args: [String], output: CLIOutput, count: Int, relative: Bool) throws {
         let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise]"
         let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: usage)
         guard (2...3).contains(rest.count) else {
@@ -327,22 +358,27 @@ enum CLI {
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
         let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
-        let requestedPoint = CGPoint(x: x, y: y)
         let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
-        let screenPoint = coordinateResolution.translate(point: requestedPoint)
+        let inputPoint = CGPoint(x: x, y: y)
+        let localPoint = relative
+            ? CoordinateSupport.denormalize(inputPoint, resolution: coordinateResolution)
+            : inputPoint
+        let screenPoint = coordinateResolution.translate(point: localPoint)
         try InputSupport.click(point: screenPoint, button: button, count: count, profile: profile)
+        var payload: [String: Any] = [
+            "x": x,
+            "y": y,
+            "screenPoint": CoordinateSupport.pointJSON(screenPoint),
+            "button": button.rawValue,
+            "count": count,
+            "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
+            "coordinateFallback": coordinateResolution.coordinateFallback,
+            "profile": profile.rawValue,
+        ]
+        if relative { payload["relative"] = true }
         try output.emit(
-            [
-                "x": x,
-                "y": y,
-                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
-                "button": button.rawValue,
-                "count": count,
-                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
-                "coordinateFallback": coordinateResolution.coordinateFallback,
-                "profile": profile.rawValue,
-            ],
-            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+            payload,
+            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
         )
     }
 

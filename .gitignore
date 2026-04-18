@@ -1,5 +1,7 @@
 .DS_Store
 /.build
+/.build-npm-arm64
+/.build-npm-x86_64
 /Packages
 xcuserdata/
 DerivedData/
@@ -7,3 +9,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 .vscode/launch.json
+/npm/bin/macos-cua
+/npm/LICENSE
+/npm/*.tgz
