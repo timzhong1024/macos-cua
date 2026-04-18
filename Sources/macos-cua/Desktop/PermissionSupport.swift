@@ -52,14 +52,26 @@ struct PermissionAttempt {
     var requestedPrompt: Bool = false
     var openedSettings: Bool = false
     var waited: Bool = false
+
+    // Screen Recording permission granted in System Settings does not take effect in the
+    // current process until it is restarted. If we opened settings and waited but it is
+    // still not granted, the most likely explanation is that the user granted it and the
+    // host process needs to be restarted.
+    var likelyNeedsRestart: Bool {
+        kind == .screenRecording && openedSettings && waited && !granted
+    }
+
     var json: [String: Any] {
-        [
+        var d: [String: Any] = [
             "granted": granted,
             "initiallyGranted": initiallyGranted,
             "requestedPrompt": requestedPrompt,
             "openedSettings": openedSettings,
+            "waited": waited,
             "settingsURL": kind.settingsURL?.absoluteString as Any,
         ]
+        if likelyNeedsRestart { d["likelyNeedsRestart"] = true }
+        return d
     }
 }
 
@@ -208,7 +220,11 @@ enum PermissionSupport {
             nextSteps.append(PermissionKind.accessibility.onboardingHint)
         }
         if missing.contains(.screenRecording) {
-            nextSteps.append(PermissionKind.screenRecording.onboardingHint)
+            if screenRecording.likelyNeedsRestart {
+                nextSteps.append("Screen Recording appears to have been granted. Fully quit and relaunch the host app (terminal, IDE, or agent) for the change to take effect, then rerun `macos-cua onboard`.")
+            } else {
+                nextSteps.append(PermissionKind.screenRecording.onboardingHint)
+            }
         }
         if !missing.isEmpty {
             nextSteps.append("Rerun `macos-cua onboard --wait` or `macos-cua doctor` after granting the missing permissions.")
