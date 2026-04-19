@@ -1,6 +1,6 @@
 {
   "name": "macos-cua",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS 13+ low-level computer-use runtime for agents",
   "license": "MIT",
   "repository": {
