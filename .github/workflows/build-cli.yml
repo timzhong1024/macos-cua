@@ -34,29 +34,25 @@ jobs:
 
       - name: Build release binary
         run: |
-          swift build -c release --product macos-cua
-          BIN_DIR="$(swift build -c release --show-bin-path)"
-          install -d dist/package
-          install -m 755 "${BIN_DIR}/macos-cua" "dist/package/macos-cua"
-          cp LICENSE README.md dist/package/
-
-      - name: Package archive
-        run: |
           VERSION="${GITHUB_REF_NAME}"
           if [ "${VERSION}" = "${GITHUB_SHA}" ] || [ -z "${VERSION}" ]; then
             VERSION="dev-${GITHUB_SHA::7}"
           fi
           VERSION="${VERSION//\//-}"
-          ARCHIVE_BASENAME="macos-cua-${VERSION}-darwin-${{ matrix.arch }}"
-          tar -C dist/package -czf "dist/${ARCHIVE_BASENAME}.tar.gz" .
-          shasum -a 256 "dist/${ARCHIVE_BASENAME}.tar.gz" > "dist/${ARCHIVE_BASENAME}.tar.gz.sha256"
-          echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> "${GITHUB_ENV}"
+          BINARY_BASENAME="macos-cua-${VERSION}-darwin-${{ matrix.arch }}"
 
-      - name: Upload packaged CLI
+          swift build -c release --product macos-cua
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          install -d dist
+          install -m 755 "${BIN_DIR}/macos-cua" "dist/${BINARY_BASENAME}"
+          shasum -a 256 "dist/${BINARY_BASENAME}" > "dist/${BINARY_BASENAME}.sha256"
+          echo "BINARY_BASENAME=${BINARY_BASENAME}" >> "${GITHUB_ENV}"
+
+      - name: Upload release binary
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ env.ARCHIVE_BASENAME }}
+          name: ${{ env.BINARY_BASENAME }}
           path: |
-            dist/${{ env.ARCHIVE_BASENAME }}.tar.gz
-            dist/${{ env.ARCHIVE_BASENAME }}.tar.gz.sha256
+            dist/${{ env.BINARY_BASENAME }}
+            dist/${{ env.BINARY_BASENAME }}.sha256
           if-no-files-found: error
