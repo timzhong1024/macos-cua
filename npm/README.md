@@ -56,6 +56,7 @@ npm publish --dry-run ./npm
 macos-cua doctor
 macos-cua screenshot /tmp/frontmost.png
 macos-cua move 800 400 --precise
+macos-cua click 120 73 --precise && macos-cua type "Slack" && macos-cua keypress return
 ```
 
 For full documentation, see the upstream project README:
