@@ -2,6 +2,23 @@
 
 `macos-cua` is a macOS-only low-level computer-use runtime for agents.
 
+`macos-cua` is the most compatible GUI computer-use runtime: if a human can do
+it, `macos-cua` can usually do it too. It is not the optimal choice for
+browser workflows or strong-a11y apps.
+
+In a larger CU stack:
+
+- use `macos-cua` when the task is fundamentally pointer, keyboard, screenshot,
+  clipboard, or window-control work
+- use Codex Computer Use when the target app exposes a strong enough
+  accessibility tree that element-level actions are cleaner than coordinate
+  loops
+- use `bb-browser` when the task is primarily a website workflow inside a
+  controlled Chrome session
+
+If you are choosing between runtimes, see the
+[runtime selection guide](docs/runtime-selection.md).
+
 Its default path is simple:
 
 - coordinates are absolute

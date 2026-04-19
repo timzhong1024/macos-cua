@@ -10,6 +10,7 @@ Start here when the default absolute-coordinate workflow is not enough.
 - [Coordinate model](coordinate-model.md)
 - [Model resolution guide](model-resolution.md)
 - [JSON output and automation](json-output.md)
+- [Runtime selection guide](runtime-selection.md)
 
 ## Research
 
