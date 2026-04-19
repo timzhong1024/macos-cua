@@ -12,8 +12,8 @@ enum CLI {
       record enable|disable|status
       screenshot [--screen] [--region x y w h] <path.png>
       move <x> <y> [--screen] [--fast|--precise]
-      click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
-      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
+      click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
+      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
       scroll <dx> <dy>
       keypress <key[+key...]>
       type [--fast] <text>
@@ -27,8 +27,10 @@ enum CLI {
       Use --screen to interpret coordinates in main-screen space.
       Window bounds remain reported in screen-global coordinates.
       Use screenshot --region as the fallback for dense pages and small targets.
-      Crop tightly around the likely target area, re-read the local image, then
-        issue the final click.
+      When a click looks off, use --post-crop to capture a local debug crop.
+      Do not assume the crop center is the click point. Use postCropClickPoint
+        as the actual click location inside the crop, then map corrected crop
+        coordinates back through postCropBounds/origin.
       Pointer movement defaults to the fast humanized profile.
       Prefer absolute coordinates first.
       --relative is a fallback mode: it interprets all action coordinates as
@@ -357,15 +359,23 @@ enum CLI {
             "profile": profile.rawValue,
         ]
         if relative { payload["relative"] = true }
-        try output.emit(
-            payload,
-            human: "moved pointer to \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
-        )
+        if let feedback = AccessibilitySupport.feedback(for: screenPoint, resolution: coordinateResolution) {
+            for (key, value) in feedback {
+                payload[key] = value
+            }
+        }
+        var human = "moved pointer to \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+        if let feedback = payload["feedback"] as? String {
+            human += " | \(feedback)"
+        } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
+            human += " | " + feedbackLines.joined(separator: " -> ")
+        }
+        try output.emit(payload, human: human)
     }
 
     static func click(args: [String], output: CLIOutput, count: Int, relative: Bool) throws {
-        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise]"
-        let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: usage)
+        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]"
+        let (rest, profile, explicitScreen, postCropPath) = try parseClickOptions(args, usage: usage)
         guard (2...3).contains(rest.count) else {
             throw CUAError(message: usage)
         }
@@ -393,9 +403,48 @@ enum CLI {
             "profile": profile.rawValue,
         ]
         if relative { payload["relative"] = true }
+        if let feedback = AccessibilitySupport.feedback(for: screenPoint, resolution: coordinateResolution) {
+            for (key, value) in feedback {
+                payload[key] = value
+            }
+        }
+        if let postCropPath {
+            let cropBounds = coordinateResolution.coordinateSpace == .window
+                ? coordinateResolution.windowBounds
+                : ScreenshotSupport.screenBounds()
+            if let bounds = cropBounds,
+               let crop = ScreenshotSupport.cropRect(centeredAt: screenPoint, within: bounds),
+               let cropPayload = try? ScreenshotSupport.capture(
+                    target: .region(crop),
+                    path: postCropPath,
+                    coordinateSpace: .screen,
+                    coordinateFallback: false,
+                    reportedBounds: crop
+               ) {
+                let cropPoint = CGPoint(x: screenPoint.x - crop.origin.x, y: screenPoint.y - crop.origin.y)
+                try? ScreenshotSupport.annotatePostCrop(
+                    at: URL(fileURLWithPath: postCropPath),
+                    markerPoint: cropPoint
+                )
+                let cropLocalOrigin = coordinateResolution.coordinateSpace == .window
+                    ? (coordinateResolution.localPointer(fromScreenPoint: crop.origin) ?? crop.origin)
+                    : crop.origin
+                let cropLocalBounds = CGRect(origin: cropLocalOrigin, size: crop.size)
+                payload["postCropPath"] = cropPayload["path"]
+                payload["postCropBounds"] = CoordinateSupport.rectJSON(cropLocalBounds)
+                payload["postCropOrigin"] = CoordinateSupport.pointJSON(cropLocalOrigin)
+                payload["postCropClickPoint"] = CoordinateSupport.pointJSON(cropPoint)
+            }
+        }
+        var human = "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+        if let feedback = payload["feedback"] as? String {
+            human += " | \(feedback)"
+        } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
+            human += " | " + feedbackLines.joined(separator: " -> ")
+        }
         try output.emit(
             payload,
-            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+            human: human
         )
     }
 
@@ -562,6 +611,45 @@ enum CLI {
             }
         }
         return (rest, selected, explicitScreen)
+    }
+
+    static func parseClickOptions(_ args: [String], usage: String) throws -> ([String], PointerMotionProfile, Bool, String?) {
+        var rest: [String] = []
+        var selected: PointerMotionProfile = .fast
+        var explicit = false
+        var explicitScreen = false
+        var postCropPath: String?
+        var index = 0
+
+        while index < args.count {
+            switch args[index] {
+            case "--fast":
+                if explicit && selected != .fast { throw CUAError(message: usage) }
+                selected = .fast
+                explicit = true
+                index += 1
+            case "--precise":
+                if explicit && selected != .precise { throw CUAError(message: usage) }
+                selected = .precise
+                explicit = true
+                index += 1
+            case "--screen":
+                if explicitScreen { throw CUAError(message: usage) }
+                explicitScreen = true
+                index += 1
+            case "--post-crop":
+                guard postCropPath == nil, index + 1 < args.count else {
+                    throw CUAError(message: usage)
+                }
+                postCropPath = args[index + 1]
+                index += 2
+            default:
+                rest.append(args[index])
+                index += 1
+            }
+        }
+
+        return (rest, selected, explicitScreen, postCropPath)
     }
 
     static func parseScreenshotOptions(_ args: [String]) throws -> (remaining: [String], explicitScreen: Bool, region: CGRect?) {
