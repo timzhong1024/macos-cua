@@ -90,6 +90,45 @@ swift run macos-cua move 800 400 --screen --precise
 swift run macos-cua click 800 400 --screen --fast
 ```
 
+## Context Helpers
+
+Keep the command surface small. Outside the screenshot-and-action loop, the
+main helpers are:
+
+- `clipboard get|set|copy|paste` for moving text across apps
+- `open-url <url>` for direct URL handoff, while browser workflows should still prefer `bb-browser`
+- `app list|activate` for bringing the target app frontmost
+- `window list|activate` for picking the right window before resuming visual actions
+
+Examples:
+
+```bash
+swift run macos-cua clipboard set "https://example.com"
+swift run macos-cua open-url https://example.com
+swift run macos-cua app activate Safari
+swift run macos-cua window list
+```
+
+## Agent Sequencing
+
+When an agent needs multiple stateful steps, prefer a single shell command with
+`&&` so each step runs only after the previous one exits successfully.
+
+This avoids race conditions between separate `macos-cua` processes, especially
+for flows such as click -> type -> submit.
+
+Prefer:
+
+```bash
+swift run macos-cua click 120 73 --precise \
+  && swift run macos-cua type "Slack" \
+  && swift run macos-cua wait 150 \
+  && swift run macos-cua keypress return
+```
+
+Avoid launching independent `macos-cua` commands in parallel when order matters.
+For example, do not fire `type` and `keypress return` at the same time.
+
 ## Dense UI Fallback
 
 When a page is visually dense and the target is a small icon, URL, or toolbar

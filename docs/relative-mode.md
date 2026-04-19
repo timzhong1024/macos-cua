@@ -10,7 +10,6 @@ Affected commands:
 - `screenshot`
 - `move`
 - `click`
-- `double-click`
 
 This mode is most useful when a screenshot was resized between capture and inference, so `image space` is no longer 1:1 with `action space`.
 

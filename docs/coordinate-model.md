@@ -4,7 +4,7 @@
 
 ## Default Behavior
 
-- `screenshot`, `move`, `click`, and `double-click` use frontmost-window coordinates
+- `screenshot`, `move`, and `click` use frontmost-window coordinates
 - `--screen` switches them to screen-global coordinates
 - if no usable frontmost window is available, these commands fall back to screen coordinates
 
@@ -15,7 +15,6 @@ This is the default action model and the preferred happy path.
 These remain screen-global diagnostics:
 
 - `window list`
-- `window frontmost`
 - `state.frontmostWindow.bounds`
 
 This makes local-to-global translation explicit instead of hiding it.

@@ -140,52 +140,6 @@ enum AppSupport {
     }
 
     @discardableResult
-    static func launch(query: String) throws -> [String: Any] {
-        if let app = findRunningApplication(matching: query) {
-            return [
-                "ok": true,
-                "launched": false,
-                "app": record(for: app).json,
-            ]
-        }
-
-        try openApplication(query: query, activate: false)
-        let app = try requireRunningApplication(matching: query, action: "launch")
-        return [
-            "ok": true,
-            "launched": true,
-            "app": record(for: app).json,
-        ]
-    }
-
-    @discardableResult
-    static func hide(query: String) throws -> [String: Any] {
-        guard let app = findRunningApplication(matching: query) else {
-            throw CUAError(message: "app not found: \(query)")
-        }
-        _ = app.hide()
-        usleep(150_000)
-        var hidden = app.isHidden
-        if !hidden {
-            let names = [app.localizedName, appBundleName(app)].compactMap { $0 }
-            for name in names {
-                let escaped = name.replacingOccurrences(of: "\"", with: "\\\"")
-                if runAppleScript(["tell application \"System Events\" to set visible of application process \"\(escaped)\" to false"]) {
-                    usleep(150_000)
-                    hidden = app.isHidden
-                    if hidden {
-                        break
-                    }
-                }
-            }
-        }
-        return [
-            "ok": hidden,
-            "app": record(for: app).json,
-        ]
-    }
-
-    @discardableResult
     static func activate(query: String) throws -> [String: Any] {
         if let app = findRunningApplication(matching: query) {
             let ok = activateApplication(app)

@@ -6,23 +6,23 @@ enum CLI {
     Usage:
       macos-cua [--json] [--relative] <command> [args...]
 
-    Commands:
-      onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
+    Core commands:
       doctor
+      onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
       state
       open-url <url>
-      record enable|disable|status
       screenshot [--screen] [--region x y w h] <path.png>
       move <x> <y> [--screen] [--fast|--precise]
       click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
-      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
       scroll <dx> <dy>
       keypress <key[+key...]>
       type [--fast] <text>
       wait <ms>
       clipboard get|set|copy|paste
-      app list|frontmost|launch|activate|hide
-      window frontmost|list|activate|maximize|close
+
+    Basic app/window management:
+      app list|activate
+      window list|activate
 
     Notes:
       Coordinates default to the frontmost-window coordinate space.
@@ -76,16 +76,12 @@ enum CLI {
                 try state(output: output, relative: relative)
             case "open-url":
                 try openURL(args: Array(args.dropFirst()), output: output)
-            case "record":
-                try record(args: Array(args.dropFirst()), output: output)
             case "screenshot":
                 try screenshot(args: Array(args.dropFirst()), output: output, relative: relative)
             case "move":
                 try move(args: Array(args.dropFirst()), output: output, relative: relative)
             case "click":
-                try click(args: Array(args.dropFirst()), output: output, count: 1, relative: relative)
-            case "double-click":
-                try click(args: Array(args.dropFirst()), output: output, count: 2, relative: relative)
+                try click(args: Array(args.dropFirst()), output: output, relative: relative)
             case "scroll":
                 try scroll(args: Array(args.dropFirst()), output: output)
             case "keypress":
@@ -324,31 +320,6 @@ enum CLI {
         try output.emit(payload, human: human)
     }
 
-    static func record(args: [String], output: CLIOutput) throws {
-        guard let subcommand = args.first, args.count == 1 else {
-            throw CUAError(message: "usage: macos-cua record enable|disable|status")
-        }
-        switch subcommand {
-        case "enable":
-            let payload = try Recorder.enable()
-            let path = payload["sessionPath"] as? String ?? "n/a"
-            let alreadyEnabled = payload["alreadyEnabled"] as? Bool == true
-            try output.emit(payload, human: alreadyEnabled ? "recording already enabled: \(path)" : "recording enabled: \(path)")
-        case "disable":
-            let payload = try Recorder.disable()
-            let path = payload["lastSessionPath"] as? String ?? "n/a"
-            let alreadyDisabled = payload["alreadyDisabled"] as? Bool == true
-            try output.emit(payload, human: alreadyDisabled ? "recording already disabled" : "recording disabled: \(path)")
-        case "status":
-            let payload = try Recorder.status()
-            let enabled = payload["enabled"] as? Bool == true
-            let path = (payload["currentSessionPath"] as? String) ?? (payload["lastSessionPath"] as? String) ?? "n/a"
-            try output.emit(payload, human: enabled ? "recording enabled: \(path)" : "recording disabled: \(path)")
-        default:
-            throw CUAError(message: "unsupported record command: \(subcommand)")
-        }
-    }
-
     static func move(args: [String], output: CLIOutput, relative: Bool) throws {
         let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         guard rest.count == 2 else {
@@ -375,8 +346,8 @@ enum CLI {
         try output.emit(payload, human: human)
     }
 
-    static func click(args: [String], output: CLIOutput, count: Int, relative: Bool) throws {
-        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]"
+    static func click(args: [String], output: CLIOutput, relative: Bool) throws {
+        let usage = "usage: macos-cua click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]"
         let (rest, profile, explicitScreen, postCropPath) = try parseClickOptions(args, usage: usage)
         guard (2...3).contains(rest.count) else {
             throw CUAError(message: usage)
@@ -386,10 +357,10 @@ enum CLI {
         let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
         let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
         let actionPoint = try coordinateContext.inputPoint(x: x, y: y)
-        try InputSupport.click(point: actionPoint.screen, button: button, count: count, profile: profile)
+        try InputSupport.click(point: actionPoint.screen, button: button, count: 1, profile: profile)
         var payload = coordinateContext.actionPayload(x: x, y: y, screenPoint: actionPoint.screen)
         payload["button"] = button.rawValue
-        payload["count"] = count
+        payload["count"] = 1
         payload["profile"] = profile.rawValue
         if let feedback = AccessibilitySupport.feedback(for: actionPoint.screen, context: coordinateContext) {
             for (key, value) in feedback {
@@ -418,7 +389,7 @@ enum CLI {
                 payload["postCropClickPoint"] = CoordinateSupport.pointJSON(cropPoint)
             }
         }
-        var human = "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
+        var human = "clicked \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
         if let feedback = payload["feedback"] as? String {
             human += " | \(feedback)"
         } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
@@ -501,7 +472,7 @@ enum CLI {
 
     static func app(args: [String], output: CLIOutput) throws {
         guard let subcommand = args.first else {
-            throw CUAError(message: "usage: macos-cua app list|frontmost|launch|activate|hide")
+            throw CUAError(message: "usage: macos-cua app list|activate")
         }
         switch subcommand {
         case "list":
@@ -510,17 +481,6 @@ enum CLI {
                 records.map(\.json),
                 lines: records.isEmpty ? ["No running user apps found."] : records.map(\.line)
             )
-        case "frontmost":
-            let record = AppSupport.frontmostApplication().map(AppSupport.record(for:))
-            try output.emit(record?.json as Any, human: record?.line ?? "No frontmost app.")
-        case "launch":
-            guard args.count >= 2 else {
-                throw CUAError(message: "usage: macos-cua app launch <name-or-bundle-id>")
-            }
-            let query = args.dropFirst().joined(separator: " ")
-            let payload = try AppSupport.launch(query: query)
-            let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
-            try output.emit(payload, human: "launched app: \(record)")
         case "activate":
             guard args.count >= 2 else {
                 throw CUAError(message: "usage: macos-cua app activate <name-or-bundle-id>")
@@ -529,14 +489,6 @@ enum CLI {
             let payload = try AppSupport.activate(query: query)
             let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
             try output.emit(payload, human: "activated app: \(record)")
-        case "hide":
-            guard args.count >= 2 else {
-                throw CUAError(message: "usage: macos-cua app hide <name-or-bundle-id>")
-            }
-            let query = args.dropFirst().joined(separator: " ")
-            let payload = try AppSupport.hide(query: query)
-            let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
-            try output.emit(payload, human: "hid app: \(record)")
         default:
             throw CUAError(message: "unsupported app command: \(subcommand)")
         }
@@ -544,12 +496,9 @@ enum CLI {
 
     static func window(args: [String], output: CLIOutput) throws {
         guard let subcommand = args.first else {
-            throw CUAError(message: "usage: macos-cua window frontmost|list|activate|maximize|close")
+            throw CUAError(message: "usage: macos-cua window list|activate")
         }
         switch subcommand {
-        case "frontmost":
-            let record = WindowSupport.frontmostWindow()
-            try output.emit(record?.json as Any, human: record?.line ?? "No frontmost window.")
         case "list":
             let windows = WindowSupport.listWindows()
             let duplicateTitleHintNeeded = !WindowSupport.duplicateTitleWindows(in: windows).isEmpty
@@ -569,20 +518,6 @@ enum CLI {
             let payload = try WindowSupport.activateWindow(id: id)
             let human = (payload["hint"] as? String).map { "activated window \(id)\n\($0)" } ?? "activated window \(id)"
             try output.emit(payload, human: human)
-        case "maximize":
-            guard args.count <= 2 else {
-                throw CUAError(message: "usage: macos-cua window maximize [id]")
-            }
-            let id = try args.dropFirst().first.map { try parseInt($0, name: "window id") }
-            let payload = try WindowSupport.maximizeWindow(id: id)
-            try output.emit(payload, human: id.map { "maximized window \($0)" } ?? "maximized the frontmost window")
-        case "close":
-            guard args.count <= 2 else {
-                throw CUAError(message: "usage: macos-cua window close [id]")
-            }
-            let id = try args.dropFirst().first.map { try parseInt($0, name: "window id") }
-            let payload = try WindowSupport.closeWindow(id: id)
-            try output.emit(payload, human: id.map { "closed window \($0)" } ?? "closed the frontmost window")
         default:
             throw CUAError(message: "unsupported window command: \(subcommand)")
         }
