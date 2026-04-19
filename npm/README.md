@@ -32,7 +32,11 @@ npm pack
 
 ## Publish
 
-Recommended flow from the repository root:
+For tagged releases, npm publishing is automated by the GitHub `release.yml`
+workflow after the corresponding `v*` tag is pushed and trusted publishing is
+configured on npm.
+
+Manual fallback from the repository root:
 
 ```bash
 ./scripts/build-npm-package.sh
