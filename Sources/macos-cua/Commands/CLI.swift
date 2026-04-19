@@ -13,6 +13,8 @@ enum CLI {
       open-url <url>
       screenshot [--screen] [--region x y w h] <path.png>
       move <x> <y> [--screen] [--fast|--precise]
+      mousedown <x> <y> [left|right|middle] [--screen] [--fast|--precise]
+      mouseup <x> <y> [left|right|middle] [--screen] [--fast|--precise]
       click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
       scroll <dx> <dy>
       keypress <key[+key...]>
@@ -80,6 +82,10 @@ enum CLI {
                 try screenshot(args: Array(args.dropFirst()), output: output, relative: relative)
             case "move":
                 try move(args: Array(args.dropFirst()), output: output, relative: relative)
+            case "mousedown":
+                try mouseButtonAction(args: Array(args.dropFirst()), output: output, action: .down, relative: relative)
+            case "mouseup":
+                try mouseButtonAction(args: Array(args.dropFirst()), output: output, action: .up, relative: relative)
             case "click":
                 try click(args: Array(args.dropFirst()), output: output, relative: relative)
             case "scroll":
@@ -343,6 +349,32 @@ enum CLI {
         } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
             human += " | " + feedbackLines.joined(separator: " -> ")
         }
+        try output.emit(payload, human: human)
+    }
+
+    static func mouseButtonAction(args: [String], output: CLIOutput, action: MouseButtonAction, relative: Bool) throws {
+        let usage = "usage: macos-cua \(action.rawValue) <x> <y> [left|right|middle] [--screen] [--fast|--precise]"
+        let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: usage)
+        guard (2...3).contains(rest.count) else {
+            throw CUAError(message: usage)
+        }
+        let x = try parseInt(rest[0], name: "x")
+        let y = try parseInt(rest[1], name: "y")
+        let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
+        let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
+        let actionPoint = try coordinateContext.inputPoint(x: x, y: y)
+        _ = try InputSupport.performMotion(to: actionPoint.screen, profile: profile, kind: .move)
+        switch action {
+        case .down:
+            try InputSupport.mouseDown(at: actionPoint.screen, button: button)
+        case .up:
+            try InputSupport.mouseUp(at: actionPoint.screen, button: button)
+        }
+        var payload = coordinateContext.actionPayload(x: x, y: y, screenPoint: actionPoint.screen)
+        payload["button"] = button.rawValue
+        payload["profile"] = profile.rawValue
+        payload["mouseAction"] = action.rawValue
+        let human = "\(action.rawValue) \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
         try output.emit(payload, human: human)
     }
 
@@ -634,4 +666,9 @@ enum CLI {
             payload[key] = value
         }
     }
+}
+
+enum MouseButtonAction: String {
+    case down = "mousedown"
+    case up = "mouseup"
 }

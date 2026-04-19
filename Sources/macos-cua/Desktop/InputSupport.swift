@@ -31,6 +31,14 @@ enum MouseButtonName: String {
         case .middle: return .otherMouseUp
         }
     }
+
+    var dragType: CGEventType {
+        switch self {
+        case .left: return .leftMouseDragged
+        case .right: return .rightMouseDragged
+        case .middle: return .otherMouseDragged
+        }
+    }
 }
 
 enum InputSupport {
@@ -98,7 +106,9 @@ enum InputSupport {
     }
 
     static func sendMouseMove(to point: CGPoint) throws {
-        try post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
+        let button = activeMouseButton() ?? .left
+        let type = activeMouseButton().map(\.dragType) ?? .mouseMoved
+        try post(CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button.cgButton))
     }
 
     static func performMotion(to point: CGPoint, profile: PointerMotionProfile, kind: PointerMotionKind, seed: UInt64? = nil) throws -> PointerMotionPlan {
@@ -122,16 +132,24 @@ enum InputSupport {
     static func click(point: CGPoint, button: MouseButtonName, count: Int, profile: PointerMotionProfile, seed: UInt64? = nil) throws {
         let plan = try performMotion(to: point, profile: profile, kind: count == 2 ? .doubleClick : .click, seed: seed)
         for clickIndex in 1...count {
-            let down = CGEvent(mouseEventSource: nil, mouseType: button.downType, mouseCursorPosition: point, mouseButton: button.cgButton)
-            down?.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
-            try post(down)
-            let up = CGEvent(mouseEventSource: nil, mouseType: button.upType, mouseCursorPosition: point, mouseButton: button.cgButton)
-            up?.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
-            try post(up)
+            try mouseDown(at: point, button: button, clickState: Int64(clickIndex))
+            try mouseUp(at: point, button: button, clickState: Int64(clickIndex))
             if clickIndex < count {
                 usleep(plan.interClickDelayMicros ?? 75_000)
             }
         }
+    }
+
+    static func mouseDown(at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1) throws {
+        let down = CGEvent(mouseEventSource: nil, mouseType: button.downType, mouseCursorPosition: point, mouseButton: button.cgButton)
+        down?.setIntegerValueField(.mouseEventClickState, value: clickState)
+        try post(down)
+    }
+
+    static func mouseUp(at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1) throws {
+        let up = CGEvent(mouseEventSource: nil, mouseType: button.upType, mouseCursorPosition: point, mouseButton: button.cgButton)
+        up?.setIntegerValueField(.mouseEventClickState, value: clickState)
+        try post(up)
     }
 
     static func scroll(dx: Int, dy: Int) throws {
@@ -163,6 +181,13 @@ enum InputSupport {
         if CGEventSource.buttonState(.combinedSessionState, button: .right) { buttons.append("right") }
         if CGEventSource.buttonState(.combinedSessionState, button: .center) { buttons.append("middle") }
         return buttons
+    }
+
+    static func activeMouseButton() -> MouseButtonName? {
+        if CGEventSource.buttonState(.combinedSessionState, button: .left) { return .left }
+        if CGEventSource.buttonState(.combinedSessionState, button: .right) { return .right }
+        if CGEventSource.buttonState(.combinedSessionState, button: .center) { return .middle }
+        return nil
     }
 
     static func keycode(for token: String) throws -> CGKeyCode {
