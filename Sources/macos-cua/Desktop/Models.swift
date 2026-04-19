@@ -48,7 +48,7 @@ struct WindowRecord {
             "pid": Int(pid),
             "appName": appName,
             "title": title,
-            "bounds": rectJSON(bounds),
+            "bounds": CoordinateSupport.rectJSON(bounds),
             "layer": layer,
             "onScreen": onScreen,
             "frontmost": isFrontmost,
@@ -61,13 +61,4 @@ struct WindowRecord {
         let idValue = id.map(String.init) ?? "n/a"
         return "\(prefix) [\(idValue)] \(appName) | \(titleValue) | \(Int(bounds.origin.x)),\(Int(bounds.origin.y)) \(Int(bounds.size.width))x\(Int(bounds.size.height))"
     }
-}
-
-func rectJSON(_ rect: CGRect) -> [String: Any] {
-    [
-        "x": Int(rect.origin.x.rounded()),
-        "y": Int(rect.origin.y.rounded()),
-        "width": Int(rect.size.width.rounded()),
-        "height": Int(rect.size.height.rounded()),
-    ]
 }

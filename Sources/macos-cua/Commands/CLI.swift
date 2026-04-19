@@ -1,40 +1,60 @@
+import AppKit
 import Foundation
 
 enum CLI {
     static let usage = """
     Usage:
-      macos-cua [--json] <command> [args...]
+      macos-cua [--json] [--relative] <command> [args...]
 
     Commands:
       onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
       doctor
       state
+      open-url <url>
       record enable|disable|status
       screenshot [--screen] [--region x y w h] <path.png>
       move <x> <y> [--screen] [--fast|--precise]
-      click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
-      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise]
+      click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
+      double-click <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]
       scroll <dx> <dy>
       keypress <key[+key...]>
       type [--fast] <text>
       wait <ms>
       clipboard get|set|copy|paste
-      app list|frontmost|activate
-      window frontmost|list|activate|minimize|maximize|close
+      app list|frontmost|launch|activate|hide
+      window frontmost|list|activate|maximize|close
 
     Notes:
       Coordinates default to the frontmost-window coordinate space.
       Use --screen to interpret coordinates in main-screen space.
       Window bounds remain reported in screen-global coordinates.
+      Use screenshot --region as the fallback for dense pages and small targets.
+      When a click looks off, use --post-crop to capture a local debug crop.
+      Do not assume the crop center is the click point. Use postCropClickPoint
+        as the actual click location inside the crop, then map corrected crop
+        coordinates back through postCropBounds/origin.
       Pointer movement defaults to the fast humanized profile.
+      Prefer absolute coordinates first.
+      --relative is a fallback mode: it interprets all action coordinates as
+        integers in [0, 1000] relative to the active coordinate space.
     """
 
     static func run(arguments: [String]) throws {
         var args = arguments
         var json = false
-        if let first = args.first, first == "--json" {
-            json = true
-            args.removeFirst()
+        var relative = false
+        var parsingGlobalFlags = true
+        while parsingGlobalFlags, let first = args.first {
+            switch first {
+            case "--json":
+                json = true
+                args.removeFirst()
+            case "--relative":
+                relative = true
+                args.removeFirst()
+            default:
+                parsingGlobalFlags = false
+            }
         }
         guard let command = args.first else {
             print(usage)
@@ -53,17 +73,19 @@ enum CLI {
             case "doctor":
                 try doctor(output: output)
             case "state":
-                try state(output: output)
+                try state(output: output, relative: relative)
+            case "open-url":
+                try openURL(args: Array(args.dropFirst()), output: output)
             case "record":
                 try record(args: Array(args.dropFirst()), output: output)
             case "screenshot":
-                try screenshot(args: Array(args.dropFirst()), output: output)
+                try screenshot(args: Array(args.dropFirst()), output: output, relative: relative)
             case "move":
-                try move(args: Array(args.dropFirst()), output: output)
+                try move(args: Array(args.dropFirst()), output: output, relative: relative)
             case "click":
-                try click(args: Array(args.dropFirst()), output: output, count: 1)
+                try click(args: Array(args.dropFirst()), output: output, count: 1, relative: relative)
             case "double-click":
-                try click(args: Array(args.dropFirst()), output: output, count: 2)
+                try click(args: Array(args.dropFirst()), output: output, count: 2, relative: relative)
             case "scroll":
                 try scroll(args: Array(args.dropFirst()), output: output)
             case "keypress":
@@ -193,14 +215,15 @@ enum CLI {
         )
     }
 
-    static func state(output: CLIOutput) throws {
+    static func state(output: CLIOutput, relative: Bool) throws {
         let pointerScreen = InputSupport.currentPointer()
-        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: false)
-        let pointerWindow = coordinateResolution.localPointer(fromScreenPoint: pointerScreen)
+        let coordinateContext = CoordinateSupport.context(explicitScreen: false, relative: relative)
+        let pointerWindow = coordinateContext.pointerWindowPoint(fromScreenPoint: pointerScreen)
         let modifiers = InputSupport.currentModifierNames()
         let mouseButtons = InputSupport.currentMouseButtons()
         let frontmostApp = AppSupport.frontmostApplication().map(AppSupport.record(for:))?.json
         let frontmostWindow = WindowSupport.frontmostWindow()?.json
+        let blockingModalState = WindowSupport.currentBlockingModalState()
         let pointerWindowLine = pointerWindow.map {
             "\(Int($0.x.rounded())),\(Int($0.y.rounded()))"
         } ?? "n/a"
@@ -208,35 +231,64 @@ enum CLI {
         releaseHints.append(contentsOf: modifiers.map { "release key \($0)" })
         releaseHints.append(contentsOf: mouseButtons.map { "release mouse \($0)" })
 
-        let payload: [String: Any] = [
-            "defaultCoordinateSpace": coordinateResolution.coordinateSpace.rawValue,
-            "defaultCoordinateFallback": coordinateResolution.coordinateFallback,
-            "pointerScreen": CoordinateSupport.pointJSON(pointerScreen),
-            "pointerWindow": pointerWindow.map(CoordinateSupport.pointJSON) as Any,
-            "held": [
+        let held: [String: Any] = [
                 "modifiers": modifiers,
                 "mouseButtons": mouseButtons,
-            ],
-            "releaseHints": releaseHints,
-            "frontmostApp": frontmostApp as Any,
-            "frontmostWindow": frontmostWindow as Any,
-            "actionSpace": try InputSupport.actionSpace(),
+        ]
+        let payload = coordinateContext.statePayload(
+            pointerScreen: pointerScreen,
+            actionSpace: try InputSupport.actionSpace(),
+            held: held,
+            releaseHints: releaseHints,
+            frontmostApp: frontmostApp,
+            frontmostWindow: frontmostWindow
+        )
+        var enrichedPayload = payload
+        applyBlockingModalState(blockingModalState, to: &enrichedPayload)
+        var lines = [
+            "Default coordinates: \(coordinateContext.summary)",
+            "Pointer (screen): \(Int(pointerScreen.x.rounded())),\(Int(pointerScreen.y.rounded()))",
+            "Pointer (window): \(pointerWindowLine)",
+            "Held modifiers: \(modifiers.isEmpty ? "none" : modifiers.joined(separator: ", "))",
+            "Held mouse buttons: \(mouseButtons.isEmpty ? "none" : mouseButtons.joined(separator: ", "))",
+            "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
+            "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
+        ]
+        if let line = blockingModalState.line {
+            lines.append(line)
+        }
+        try output.emit(
+            enrichedPayload,
+            lines: lines
+        )
+    }
+
+    static func openURL(args: [String], output: CLIOutput) throws {
+        guard args.count == 1 else {
+            throw CUAError(message: "usage: macos-cua open-url <url>")
+        }
+        guard let url = URL(string: args[0]),
+              let scheme = url.scheme,
+              !scheme.isEmpty else {
+            throw CUAError(message: "invalid URL: \(args[0])")
+        }
+        let ok = NSWorkspace.shared.open(url)
+        let payload: [String: Any] = [
+            "ok": ok,
+            "url": url.absoluteString,
+            "recommendedTool": "bb-browser",
+            "note": "Prefer bb-browser for browser tasks.",
         ]
         try output.emit(
             payload,
             lines: [
-                "Default coordinates: \(coordinateSpaceSummary(for: coordinateResolution))",
-                "Pointer (screen): \(Int(pointerScreen.x.rounded())),\(Int(pointerScreen.y.rounded()))",
-                "Pointer (window): \(pointerWindowLine)",
-                "Held modifiers: \(modifiers.isEmpty ? "none" : modifiers.joined(separator: ", "))",
-                "Held mouse buttons: \(mouseButtons.isEmpty ? "none" : mouseButtons.joined(separator: ", "))",
-                "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
-                "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
+                "Opened URL: \(url.absoluteString)",
+                "For browser tasks, prefer bb-browser.",
             ]
         )
     }
 
-    static func screenshot(args: [String], output: CLIOutput) throws {
+    static func screenshot(args: [String], output: CLIOutput, relative: Bool) throws {
         guard !args.isEmpty else {
             throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
         }
@@ -244,28 +296,31 @@ enum CLI {
         guard options.remaining.count == 1 else {
             throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
         }
-        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: options.explicitScreen)
+        let coordinateContext = CoordinateSupport.context(explicitScreen: options.explicitScreen, relative: relative)
         let target: ScreenshotTarget
+        let reportedBounds: CGRect?
         if let region = options.region {
-            target = .region(coordinateResolution.translate(rect: region))
-        } else if coordinateResolution.coordinateSpace == .window {
+            let actionRect = try coordinateContext.inputRect(region)
+            target = .region(actionRect.screen)
+            reportedBounds = coordinateContext.outputRect(fromLocalRect: actionRect.local)
+        } else if coordinateContext.usesWindowCoordinates {
             target = .frontmostWindow
+            reportedBounds = coordinateContext.screenshotReportedBounds(for: target)
         } else {
             target = .screen
+            reportedBounds = coordinateContext.screenshotReportedBounds(for: target)
         }
-        let reportedBounds = coordinateResolution.screenshotBounds(
-            for: options.region.map(ScreenshotTarget.region) ?? target
-        )
-        let payload = try ScreenshotSupport.capture(
+        var payload = try ScreenshotSupport.capture(
             target: target,
             path: options.remaining[0],
-            coordinateSpace: coordinateResolution.coordinateSpace,
-            coordinateFallback: coordinateResolution.coordinateFallback,
+            coordinateSpace: coordinateContext.coordinateSpace,
+            coordinateFallback: coordinateContext.coordinateFallback,
             reportedBounds: reportedBounds
         )
+        coordinateContext.applyMetadata(to: &payload)
         let image = payload["image"] as? [String: Any]
         let bounds = payload["bounds"] as? [String: Any]
-        let human = "captured \(payload["target"] as? String ?? "screenshot") to \(options.remaining[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), \(coordinateSpaceSummary(for: coordinateResolution)), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
+        let human = "captured \(payload["target"] as? String ?? "screenshot") to \(options.remaining[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), \(coordinateContext.summary), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
         try output.emit(payload, human: human)
     }
 
@@ -294,55 +349,84 @@ enum CLI {
         }
     }
 
-    static func move(args: [String], output: CLIOutput) throws {
+    static func move(args: [String], output: CLIOutput, relative: Bool) throws {
         let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         guard rest.count == 2 else {
             throw CUAError(message: "usage: macos-cua move <x> <y> [--screen] [--fast|--precise]")
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
-        let requestedPoint = CGPoint(x: x, y: y)
-        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
-        let screenPoint = coordinateResolution.translate(point: requestedPoint)
-        _ = try InputSupport.performMotion(to: screenPoint, profile: profile, kind: .move)
-        try output.emit(
-            [
-                "x": x,
-                "y": y,
-                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
-                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
-                "coordinateFallback": coordinateResolution.coordinateFallback,
-                "profile": profile.rawValue,
-            ],
-            human: "moved pointer to \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
-        )
+        let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
+        let actionPoint = try coordinateContext.inputPoint(x: x, y: y)
+        _ = try InputSupport.performMotion(to: actionPoint.screen, profile: profile, kind: .move)
+        var payload = coordinateContext.actionPayload(x: x, y: y, screenPoint: actionPoint.screen)
+        payload["profile"] = profile.rawValue
+        if let feedback = AccessibilitySupport.feedback(for: actionPoint.screen, context: coordinateContext) {
+            for (key, value) in feedback {
+                payload[key] = value
+            }
+        }
+        var human = "moved pointer to \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
+        if let feedback = payload["feedback"] as? String {
+            human += " | \(feedback)"
+        } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
+            human += " | " + feedbackLines.joined(separator: " -> ")
+        }
+        try output.emit(payload, human: human)
     }
 
-    static func click(args: [String], output: CLIOutput, count: Int) throws {
-        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise]"
-        let (rest, profile, explicitScreen) = try parsePointerProfile(args, usage: usage)
+    static func click(args: [String], output: CLIOutput, count: Int, relative: Bool) throws {
+        let usage = "usage: macos-cua \(count == 1 ? "click" : "double-click") <x> <y> [left|right|middle] [--screen] [--fast|--precise] [--post-crop <path.png>]"
+        let (rest, profile, explicitScreen, postCropPath) = try parseClickOptions(args, usage: usage)
         guard (2...3).contains(rest.count) else {
             throw CUAError(message: usage)
         }
         let x = try parseInt(rest[0], name: "x")
         let y = try parseInt(rest[1], name: "y")
         let button = try InputSupport.mouseButton(named: rest.count == 3 ? rest[2] : "left")
-        let requestedPoint = CGPoint(x: x, y: y)
-        let coordinateResolution = CoordinateSupport.resolve(explicitScreen: explicitScreen)
-        let screenPoint = coordinateResolution.translate(point: requestedPoint)
-        try InputSupport.click(point: screenPoint, button: button, count: count, profile: profile)
+        let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
+        let actionPoint = try coordinateContext.inputPoint(x: x, y: y)
+        try InputSupport.click(point: actionPoint.screen, button: button, count: count, profile: profile)
+        var payload = coordinateContext.actionPayload(x: x, y: y, screenPoint: actionPoint.screen)
+        payload["button"] = button.rawValue
+        payload["count"] = count
+        payload["profile"] = profile.rawValue
+        if let feedback = AccessibilitySupport.feedback(for: actionPoint.screen, context: coordinateContext) {
+            for (key, value) in feedback {
+                payload[key] = value
+            }
+        }
+        if let postCropPath {
+            let cropBounds = coordinateContext.cropBounds()
+            if let bounds = cropBounds,
+               let crop = ScreenshotSupport.cropRect(centeredAt: actionPoint.screen, within: bounds),
+               let cropPayload = try? ScreenshotSupport.capture(
+                    target: .region(crop),
+                    path: postCropPath,
+                    coordinateSpace: .screen,
+                    coordinateFallback: false,
+                    reportedBounds: crop
+               ) {
+                let cropPoint = CGPoint(x: actionPoint.screen.x - crop.origin.x, y: actionPoint.screen.y - crop.origin.y)
+                try? ScreenshotSupport.annotatePostCrop(
+                    at: URL(fileURLWithPath: postCropPath),
+                    markerPoint: cropPoint
+                )
+                payload["postCropPath"] = cropPayload["path"]
+                payload["postCropBounds"] = coordinateContext.outputRectJSON(fromScreenRect: crop)
+                payload["postCropOrigin"] = coordinateContext.outputPointJSON(fromScreenPoint: crop.origin)
+                payload["postCropClickPoint"] = CoordinateSupport.pointJSON(cropPoint)
+            }
+        }
+        var human = "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
+        if let feedback = payload["feedback"] as? String {
+            human += " | \(feedback)"
+        } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
+            human += " | " + feedbackLines.joined(separator: " -> ")
+        }
         try output.emit(
-            [
-                "x": x,
-                "y": y,
-                "screenPoint": CoordinateSupport.pointJSON(screenPoint),
-                "button": button.rawValue,
-                "count": count,
-                "coordinateSpace": coordinateResolution.coordinateSpace.rawValue,
-                "coordinateFallback": coordinateResolution.coordinateFallback,
-                "profile": profile.rawValue,
-            ],
-            human: "\(count == 1 ? "clicked" : "double-clicked") \(button.rawValue) at \(x),\(y) [\(coordinateSpaceSummary(for: coordinateResolution)), screen \(Int(screenPoint.x.rounded())),\(Int(screenPoint.y.rounded()))] [\(profile.rawValue)]"
+            payload,
+            human: human
         )
     }
 
@@ -417,7 +501,7 @@ enum CLI {
 
     static func app(args: [String], output: CLIOutput) throws {
         guard let subcommand = args.first else {
-            throw CUAError(message: "usage: macos-cua app list|frontmost|activate")
+            throw CUAError(message: "usage: macos-cua app list|frontmost|launch|activate|hide")
         }
         switch subcommand {
         case "list":
@@ -429,6 +513,14 @@ enum CLI {
         case "frontmost":
             let record = AppSupport.frontmostApplication().map(AppSupport.record(for:))
             try output.emit(record?.json as Any, human: record?.line ?? "No frontmost app.")
+        case "launch":
+            guard args.count >= 2 else {
+                throw CUAError(message: "usage: macos-cua app launch <name-or-bundle-id>")
+            }
+            let query = args.dropFirst().joined(separator: " ")
+            let payload = try AppSupport.launch(query: query)
+            let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
+            try output.emit(payload, human: "launched app: \(record)")
         case "activate":
             guard args.count >= 2 else {
                 throw CUAError(message: "usage: macos-cua app activate <name-or-bundle-id>")
@@ -437,6 +529,14 @@ enum CLI {
             let payload = try AppSupport.activate(query: query)
             let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
             try output.emit(payload, human: "activated app: \(record)")
+        case "hide":
+            guard args.count >= 2 else {
+                throw CUAError(message: "usage: macos-cua app hide <name-or-bundle-id>")
+            }
+            let query = args.dropFirst().joined(separator: " ")
+            let payload = try AppSupport.hide(query: query)
+            let record = (payload["app"] as? [String: Any])?["name"] as? String ?? query
+            try output.emit(payload, human: "hid app: \(record)")
         default:
             throw CUAError(message: "unsupported app command: \(subcommand)")
         }
@@ -444,7 +544,7 @@ enum CLI {
 
     static func window(args: [String], output: CLIOutput) throws {
         guard let subcommand = args.first else {
-            throw CUAError(message: "usage: macos-cua window frontmost|list|activate|minimize|maximize|close")
+            throw CUAError(message: "usage: macos-cua window frontmost|list|activate|maximize|close")
         }
         switch subcommand {
         case "frontmost":
@@ -452,9 +552,14 @@ enum CLI {
             try output.emit(record?.json as Any, human: record?.line ?? "No frontmost window.")
         case "list":
             let windows = WindowSupport.listWindows()
+            let duplicateTitleHintNeeded = !WindowSupport.duplicateTitleWindows(in: windows).isEmpty
+            var lines = windows.isEmpty ? ["No interactive windows found."] : windows.map(\.line)
+            if duplicateTitleHintNeeded {
+                lines.append(WindowSupport.duplicateTitleHint)
+            }
             try output.emit(
                 windows.map(\.json),
-                lines: windows.isEmpty ? ["No interactive windows found."] : windows.map(\.line)
+                lines: lines
             )
         case "activate":
             guard args.count == 2 else {
@@ -462,16 +567,22 @@ enum CLI {
             }
             let id = try parseInt(args[1], name: "window id")
             let payload = try WindowSupport.activateWindow(id: id)
-            try output.emit(payload, human: "activated window \(id)")
-        case "minimize":
-            let payload = try WindowSupport.minimizeFrontmostWindow()
-            try output.emit(payload, human: "minimized the frontmost window")
+            let human = (payload["hint"] as? String).map { "activated window \(id)\n\($0)" } ?? "activated window \(id)"
+            try output.emit(payload, human: human)
         case "maximize":
-            let payload = try WindowSupport.maximizeFrontmostWindow()
-            try output.emit(payload, human: "maximized the frontmost window")
+            guard args.count <= 2 else {
+                throw CUAError(message: "usage: macos-cua window maximize [id]")
+            }
+            let id = try args.dropFirst().first.map { try parseInt($0, name: "window id") }
+            let payload = try WindowSupport.maximizeWindow(id: id)
+            try output.emit(payload, human: id.map { "maximized window \($0)" } ?? "maximized the frontmost window")
         case "close":
-            let payload = try WindowSupport.closeFrontmostWindow()
-            try output.emit(payload, human: "closed the frontmost window")
+            guard args.count <= 2 else {
+                throw CUAError(message: "usage: macos-cua window close [id]")
+            }
+            let id = try args.dropFirst().first.map { try parseInt($0, name: "window id") }
+            let payload = try WindowSupport.closeWindow(id: id)
+            try output.emit(payload, human: id.map { "closed window \($0)" } ?? "closed the frontmost window")
         default:
             throw CUAError(message: "unsupported window command: \(subcommand)")
         }
@@ -511,6 +622,45 @@ enum CLI {
         return (rest, selected, explicitScreen)
     }
 
+    static func parseClickOptions(_ args: [String], usage: String) throws -> ([String], PointerMotionProfile, Bool, String?) {
+        var rest: [String] = []
+        var selected: PointerMotionProfile = .fast
+        var explicit = false
+        var explicitScreen = false
+        var postCropPath: String?
+        var index = 0
+
+        while index < args.count {
+            switch args[index] {
+            case "--fast":
+                if explicit && selected != .fast { throw CUAError(message: usage) }
+                selected = .fast
+                explicit = true
+                index += 1
+            case "--precise":
+                if explicit && selected != .precise { throw CUAError(message: usage) }
+                selected = .precise
+                explicit = true
+                index += 1
+            case "--screen":
+                if explicitScreen { throw CUAError(message: usage) }
+                explicitScreen = true
+                index += 1
+            case "--post-crop":
+                guard postCropPath == nil, index + 1 < args.count else {
+                    throw CUAError(message: usage)
+                }
+                postCropPath = args[index + 1]
+                index += 2
+            default:
+                rest.append(args[index])
+                index += 1
+            }
+        }
+
+        return (rest, selected, explicitScreen, postCropPath)
+    }
+
     static func parseScreenshotOptions(_ args: [String]) throws -> (remaining: [String], explicitScreen: Bool, region: CGRect?) {
         var remaining: [String] = []
         var explicitScreen = false
@@ -544,7 +694,9 @@ enum CLI {
         return (remaining, explicitScreen, region)
     }
 
-    static func coordinateSpaceSummary(for resolution: CoordinateResolution) -> String {
-        resolution.coordinateFallback ? "\(resolution.coordinateSpace.rawValue) fallback" : resolution.coordinateSpace.rawValue
+    static func applyBlockingModalState(_ blockingModalState: WindowSupport.BlockingModalState, to payload: inout [String: Any]) {
+        for (key, value) in blockingModalState.payload {
+            payload[key] = value
+        }
     }
 }

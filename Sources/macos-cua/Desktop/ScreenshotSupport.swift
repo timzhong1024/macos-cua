@@ -55,7 +55,7 @@ enum ScreenshotSupport {
         return [
             "path": url.path,
             "target": targetName(target),
-            "bounds": reportedBounds.map(rectJSON) as Any,
+            "bounds": reportedBounds.map(CoordinateSupport.rectJSON) as Any,
             "coordinateSpace": coordinateSpace.rawValue,
             "coordinateFallback": coordinateFallback,
             "image": [
@@ -107,6 +107,15 @@ enum ScreenshotSupport {
     static func screenBounds() -> CGRect? {
         guard let screen = NSScreen.main else { return nil }
         return CGRect(origin: .zero, size: screen.frame.size)
+    }
+
+    static func cropRect(centeredAt point: CGPoint, within bounds: CGRect, size: CGFloat = 100) -> CGRect? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let half = size / 2
+        let desired = CGRect(x: point.x - half, y: point.y - half, width: size, height: size)
+        let clipped = desired.intersection(bounds.integral)
+        guard !clipped.isNull, clipped.width > 0, clipped.height > 0 else { return nil }
+        return clipped
     }
 
     static func pngDimensions(at url: URL) throws -> (width: Int, height: Int) {
@@ -169,5 +178,119 @@ enum ScreenshotSupport {
         }
 
         try pngData.write(to: url, options: .atomic)
+    }
+
+    static func annotatePostCrop(at url: URL, markerPoint: CGPoint) throws {
+        guard let source = NSImage(contentsOf: url) else {
+            throw CUAError(message: "failed to load post-crop image for annotation: \(url.path)")
+        }
+
+        let size = source.size
+        let targetWidth = Int(size.width.rounded())
+        let targetHeight = Int(size.height.rounded())
+        guard targetWidth > 0, targetHeight > 0 else { return }
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: targetWidth,
+            pixelsHigh: targetHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw CUAError(message: "failed to allocate post-crop annotation buffer: \(url.path)")
+        }
+
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else {
+            throw CUAError(message: "failed to create post-crop annotation context: \(url.path)")
+        }
+
+        let clampedX = min(max(markerPoint.x, 0), CGFloat(targetWidth))
+        let clampedY = min(max(markerPoint.y, 0), CGFloat(targetHeight))
+        let drawPoint = CGPoint(x: clampedX, y: CGFloat(targetHeight) - clampedY)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSGraphicsContext.current?.imageInterpolation = .high
+
+        source.draw(
+            in: NSRect(x: 0, y: 0, width: targetWidth, height: targetHeight),
+            from: .zero,
+            operation: .copy,
+            fraction: 1.0
+        )
+
+        drawTargetMarker(at: drawPoint)
+
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let pngData = rep.representation(using: .png, properties: [:]) else {
+            throw CUAError(message: "failed to encode annotated post-crop image: \(url.path)")
+        }
+
+        try pngData.write(to: url, options: .atomic)
+    }
+
+    private static func drawTargetMarker(at point: CGPoint) {
+        let outerRadius: CGFloat = 18
+        let innerRadius: CGFloat = 8
+        let crossRadius: CGFloat = 24
+        let dotRadius: CGFloat = 4
+
+        let shadow = NSShadow()
+        shadow.shadowBlurRadius = 6
+        shadow.shadowOffset = .zero
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.65)
+
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+
+        NSColor.white.withAlphaComponent(0.95).setStroke()
+        let outer = NSBezierPath(ovalIn: CGRect(
+            x: point.x - outerRadius,
+            y: point.y - outerRadius,
+            width: outerRadius * 2,
+            height: outerRadius * 2
+        ))
+        outer.lineWidth = 4
+        outer.stroke()
+
+        NSColor.systemPink.withAlphaComponent(0.95).setStroke()
+        let inner = NSBezierPath(ovalIn: CGRect(
+            x: point.x - innerRadius,
+            y: point.y - innerRadius,
+            width: innerRadius * 2,
+            height: innerRadius * 2
+        ))
+        inner.lineWidth = 4
+        inner.stroke()
+
+        let vertical = NSBezierPath()
+        vertical.move(to: CGPoint(x: point.x, y: point.y - crossRadius))
+        vertical.line(to: CGPoint(x: point.x, y: point.y + crossRadius))
+        vertical.lineWidth = 3
+        vertical.stroke()
+
+        let horizontal = NSBezierPath()
+        horizontal.move(to: CGPoint(x: point.x - crossRadius, y: point.y))
+        horizontal.line(to: CGPoint(x: point.x + crossRadius, y: point.y))
+        horizontal.lineWidth = 3
+        horizontal.stroke()
+
+        NSColor.systemCyan.withAlphaComponent(0.95).setFill()
+        let centerDot = NSBezierPath(ovalIn: CGRect(
+            x: point.x - dotRadius,
+            y: point.y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
+        ))
+        centerDot.fill()
+
+        NSGraphicsContext.restoreGraphicsState()
     }
 }
