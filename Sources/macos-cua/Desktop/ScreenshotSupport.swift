@@ -55,7 +55,7 @@ enum ScreenshotSupport {
         return [
             "path": url.path,
             "target": targetName(target),
-            "bounds": reportedBounds.map(rectJSON) as Any,
+            "bounds": reportedBounds.map(CoordinateSupport.rectJSON) as Any,
             "coordinateSpace": coordinateSpace.rawValue,
             "coordinateFallback": coordinateFallback,
             "image": [

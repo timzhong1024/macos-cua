@@ -2,6 +2,48 @@ import AppKit
 import Foundation
 
 enum AppSupport {
+    static func appBundleName(_ app: NSRunningApplication) -> String? {
+        app.bundleURL?.deletingPathExtension().lastPathComponent
+    }
+
+    static func runAppleScript(_ lines: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = lines.flatMap { ["-e", $0] }
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    static func openApplication(query: String, activate: Bool) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        if query.contains(".") {
+            process.arguments = activate ? ["-b", query] : ["-g", "-b", query]
+        } else {
+            process.arguments = activate ? ["-a", query] : ["-g", "-a", query]
+        }
+        let stderr = Pipe()
+        process.standardError = stderr
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw CUAError(message: "failed to launch app: \(error.localizedDescription)")
+        }
+        if process.terminationStatus != 0 {
+            let data = stderr.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CUAError(message: message?.isEmpty == false ? message! : "failed to launch app: \(query)")
+        }
+    }
+
     static func runningUserApplications() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications
             .filter { app in
@@ -44,14 +86,95 @@ enum AppSupport {
             return exactName
         }
 
-        return runningUserApplications().first(where: { ($0.localizedName ?? "").localizedCaseInsensitiveContains(normalized) })
+        if let exactBundleName = runningUserApplications().first(where: { (appBundleName($0) ?? "").caseInsensitiveCompare(normalized) == .orderedSame }) {
+            return exactBundleName
+        }
+
+        return runningUserApplications().first(where: {
+            ($0.localizedName ?? "").localizedCaseInsensitiveContains(normalized) ||
+            (appBundleName($0) ?? "").localizedCaseInsensitiveContains(normalized)
+        })
+    }
+
+    static func waitForRunningApplication(matching query: String, timeoutMs: Int = 2000) -> NSRunningApplication? {
+        let attempts = max(1, timeoutMs / 100)
+        for _ in 0..<attempts {
+            if let app = findRunningApplication(matching: query) {
+                return app
+            }
+            usleep(100_000)
+        }
+        return findRunningApplication(matching: query)
+    }
+
+    static func activateApplication(_ app: NSRunningApplication) -> Bool {
+        app.unhide()
+        let direct = app.activate()
+        if app.isActive || frontmostApplication()?.processIdentifier == app.processIdentifier {
+            return true
+        }
+        if let bundleID = app.bundleIdentifier,
+           runAppleScript(["tell application id \"\(bundleID)\" to activate"]) {
+            usleep(250_000)
+        } else if let name = app.localizedName,
+                  runAppleScript(["tell application \"\(name.replacingOccurrences(of: "\"", with: "\\\""))\" to activate"]) {
+            usleep(250_000)
+        } else {
+            usleep(250_000)
+        }
+        return direct || app.isActive || frontmostApplication()?.processIdentifier == app.processIdentifier
+    }
+
+    @discardableResult
+    static func launch(query: String) throws -> [String: Any] {
+        if let app = findRunningApplication(matching: query) {
+            return [
+                "ok": true,
+                "launched": false,
+                "app": record(for: app).json,
+            ]
+        }
+
+        try openApplication(query: query, activate: false)
+        let app = waitForRunningApplication(matching: query)
+        return [
+            "ok": true,
+            "launched": true,
+            "app": app.map(record(for:))?.json as Any,
+        ]
+    }
+
+    @discardableResult
+    static func hide(query: String) throws -> [String: Any] {
+        guard let app = findRunningApplication(matching: query) else {
+            throw CUAError(message: "app not found: \(query)")
+        }
+        _ = app.hide()
+        usleep(150_000)
+        var hidden = app.isHidden
+        if !hidden {
+            let names = [app.localizedName, appBundleName(app)].compactMap { $0 }
+            for name in names {
+                let escaped = name.replacingOccurrences(of: "\"", with: "\\\"")
+                if runAppleScript(["tell application \"System Events\" to set visible of application process \"\(escaped)\" to false"]) {
+                    usleep(150_000)
+                    hidden = app.isHidden
+                    if hidden {
+                        break
+                    }
+                }
+            }
+        }
+        return [
+            "ok": hidden,
+            "app": record(for: app).json,
+        ]
     }
 
     @discardableResult
     static func activate(query: String) throws -> [String: Any] {
         if let app = findRunningApplication(matching: query) {
-            app.unhide()
-            let ok = app.activate(options: [.activateIgnoringOtherApps])
+            let ok = activateApplication(app)
             return [
                 "ok": ok,
                 "launched": false,
@@ -59,26 +182,10 @@ enum AppSupport {
             ]
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = query.contains(".") ? ["-b", query] : ["-a", query]
-        let stderr = Pipe()
-        process.standardError = stderr
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw CUAError(message: "failed to launch app: \(error.localizedDescription)")
-        }
-        if process.terminationStatus != 0 {
-            let data = stderr.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw CUAError(message: message?.isEmpty == false ? message! : "failed to launch app: \(query)")
-        }
-        usleep(350_000)
-        let app = findRunningApplication(matching: query) ?? frontmostApplication()
+        try openApplication(query: query, activate: true)
+        let app = waitForRunningApplication(matching: query) ?? frontmostApplication()
         return [
-            "ok": true,
+            "ok": app.map(activateApplication) ?? true,
             "launched": true,
             "app": app.map(record(for:))?.json as Any,
         ]

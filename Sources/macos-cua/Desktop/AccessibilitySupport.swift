@@ -118,14 +118,15 @@ enum AccessibilitySupport {
         WindowSupport.isAccessibilityTrusted()
     }
 
-    static func feedback(for point: CGPoint, resolution: CoordinateResolution) -> [String: Any]? {
+    static func feedback(for point: CGPoint, context: CoordinateContext) -> [String: Any]? {
         guard isAvailable(),
               let root = WindowSupport.frontmostWindowAXElement() else {
             return nil
         }
 
         if let hit = element(at: point),
-           let lines = feedbackLines(from: hit),
+           let target = nearestDirectFeedbackTarget(from: hit),
+           let lines = feedbackLines(from: target),
            !lines.isEmpty {
             return ["feedback": lines]
         }
@@ -155,7 +156,7 @@ enum AccessibilitySupport {
         return [
             "feedback": lines,
             "distance": Int(candidate.1.rounded()),
-            "suggestedClick": CoordinateSupport.pointJSON(convert(point: center, resolution: resolution)),
+            "suggestedClick": context.outputPointJSON(fromScreenPoint: center),
         ]
     }
 
@@ -445,13 +446,20 @@ enum AccessibilitySupport {
         return array
     }
 
-    private static func convert(point: CGPoint, resolution: CoordinateResolution) -> CGPoint {
-        switch resolution.coordinateSpace {
-        case .screen:
-            return point
-        case .window:
-            return resolution.localPointer(fromScreenPoint: point) ?? point
+    private static func nearestDirectFeedbackTarget(from element: AXUIElement) -> AXUIElement? {
+        var current: AXUIElement? = element
+        var steps = 0
+
+        while let currentElement = current, steps < 10 {
+            if let snapshot = snapshot(for: currentElement),
+               snapshot.isEditable || snapshot.isStrongInteractive {
+                return currentElement
+            }
+            current = WindowSupport.axElement(currentElement, kAXParentAttribute)
+            steps += 1
         }
+
+        return nil
     }
 
     private static func feedbackLines(from element: AXUIElement) -> [String]? {

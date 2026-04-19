@@ -4,6 +4,8 @@ import CoreGraphics
 import Foundation
 
 enum WindowSupport {
+    static let duplicateTitleHint = "Duplicate window titles detected; use screen-space to bring the target window frontmost first."
+
     static func isAccessibilityTrusted() -> Bool {
         PermissionSupport.isGranted(.accessibility)
     }
@@ -91,6 +93,71 @@ enum WindowSupport {
         }
     }
 
+    static func cgWindowCandidates(pid: pid_t) -> [WindowRecord] {
+        let onScreen = interactiveWindows().filter { $0.pid == pid }
+        if !onScreen.isEmpty {
+            return onScreen
+        }
+
+        let all = interactiveWindows(onScreenOnly: false).filter { $0.pid == pid }
+        var deduped: [WindowRecord] = []
+        var seenIDs = Set<Int>()
+        for record in all {
+            if let id = record.id {
+                if seenIDs.insert(id).inserted {
+                    deduped.append(record)
+                }
+            } else {
+                deduped.append(record)
+            }
+        }
+        return deduped
+    }
+
+    static func record(for window: AXUIElement, app: NSRunningApplication, cgFallback: WindowRecord? = nil) -> WindowRecord? {
+        guard let position = axPoint(window, kAXPositionAttribute),
+              let size = axSize(window, kAXSizeAttribute),
+              size.width > 1,
+              size.height > 1 else {
+            return nil
+        }
+        let title = axString(window, kAXTitleAttribute) ?? (cgFallback?.title ?? "")
+        let bounds = CGRect(origin: position, size: size)
+        let id = matchWindowID(pid: app.processIdentifier, title: title, bounds: bounds) ?? cgFallback?.id
+        return WindowRecord(
+            id: id,
+            pid: app.processIdentifier,
+            appName: app.localizedName ?? "Unknown",
+            title: title,
+            bounds: bounds,
+            layer: 0,
+            onScreen: true,
+            isFrontmost: true
+        )
+    }
+
+    static func frontmostAXWindowElement(for app: NSRunningApplication, cgFallback: WindowRecord?) -> AXUIElement? {
+        guard isAccessibilityTrusted() else { return nil }
+
+        let appElement = axAppElement(pid: app.processIdentifier)
+        let main = axElement(appElement, kAXMainWindowAttribute)
+        let focused = axElement(appElement, kAXFocusedWindowAttribute)
+        let candidates = [main, focused].compactMap { $0 } + axWindows(for: app)
+
+        if let fallbackID = cgFallback?.id {
+            for window in candidates {
+                guard let record = record(for: window, app: app, cgFallback: cgFallback) else {
+                    continue
+                }
+                if record.id == fallbackID {
+                    return window
+                }
+            }
+        }
+
+        return main ?? focused ?? candidates.first
+    }
+
     static func frontmostWindow() -> WindowRecord? {
         guard let app = AppSupport.frontmostApplication() else { return nil }
 
@@ -103,50 +170,71 @@ enum WindowSupport {
             return nil
         }
 
-        let appElement = axAppElement(pid: app.processIdentifier)
-        guard let focused = axElement(appElement, kAXFocusedWindowAttribute) else {
+        guard let axWindow = frontmostAXWindowElement(for: app, cgFallback: cgFallback) else {
             if let record = cgFallback {
                 return WindowRecord(id: record.id, pid: record.pid, appName: record.appName, title: record.title, bounds: record.bounds, layer: record.layer, onScreen: record.onScreen, isFrontmost: true)
             }
             return nil
         }
-
-        let title = axString(focused, kAXTitleAttribute) ?? (cgFallback?.title ?? "")
-        let position = axPoint(focused, kAXPositionAttribute) ?? (cgFallback?.bounds.origin ?? .zero)
-        let size = axSize(focused, kAXSizeAttribute) ?? (cgFallback?.bounds.size ?? .zero)
-        let axBounds = CGRect(origin: position, size: size)
-        let id = matchWindowID(pid: app.processIdentifier, title: title, bounds: axBounds) ?? cgFallback?.id
-        return WindowRecord(
-            id: id,
-            pid: app.processIdentifier,
-            appName: app.localizedName ?? "Unknown",
-            title: title,
-            bounds: axBounds,
-            layer: 0,
-            onScreen: true,
-            isFrontmost: true
-        )
+        return record(for: axWindow, app: app, cgFallback: cgFallback)
     }
 
     static func matchWindowID(pid: pid_t, title: String, bounds: CGRect) -> Int? {
-        let candidates = interactiveWindows().filter { $0.pid == pid }
-        if let exact = candidates.first(where: { candidate in
-            candidate.title == title &&
-            abs(candidate.bounds.width - bounds.width) < 12 &&
-            abs(candidate.bounds.height - bounds.height) < 12
-        }) {
-            return exact.id
+        let candidates = cgWindowCandidates(pid: pid)
+        guard !candidates.isEmpty else { return nil }
+        if candidates.count == 1 {
+            return candidates[0].id
         }
-        if let titleOnly = candidates.first(where: { !$0.title.isEmpty && $0.title == title }) {
-            return titleOnly.id
+
+        let exactTitleMatches = candidates.filter { !$0.title.isEmpty && $0.title == title }
+        if exactTitleMatches.count == 1 {
+            return exactTitleMatches[0].id
         }
-        return candidates.first?.id
+
+        let targetArea = max(1, bounds.width * bounds.height)
+        let ranked = candidates
+            .filter { $0.id != nil }
+            .map { candidate -> (record: WindowRecord, score: Double) in
+                var score = 0.0
+
+                if !title.isEmpty && candidate.title == title {
+                    score += 1_000
+                } else if title.isEmpty && candidate.title.isEmpty {
+                    score += 100
+                } else if !title.isEmpty && !candidate.title.isEmpty {
+                    if candidate.title.localizedCaseInsensitiveContains(title) || title.localizedCaseInsensitiveContains(candidate.title) {
+                        score += 250
+                    }
+                }
+
+                let widthDelta = abs(candidate.bounds.width - bounds.width)
+                let heightDelta = abs(candidate.bounds.height - bounds.height)
+                score -= min(600, widthDelta + heightDelta)
+
+                let candidateArea = max(1, candidate.bounds.width * candidate.bounds.height)
+                let areaRatio = min(candidateArea, targetArea) / max(candidateArea, targetArea)
+                score += areaRatio * 200
+
+                if candidate.onScreen {
+                    score += 25
+                }
+
+                return (candidate, score)
+            }
+            .sorted {
+                if $0.score == $1.score {
+                    return ($0.record.id ?? -1) < ($1.record.id ?? -1)
+                }
+                return $0.score > $1.score
+            }
+
+        return ranked.first?.record.id ?? candidates.first?.id
     }
 
     static func frontmostWindowAXElement() -> AXUIElement? {
         guard let app = AppSupport.frontmostApplication() else { return nil }
-        guard isAccessibilityTrusted() else { return nil }
-        return axElement(axAppElement(pid: app.processIdentifier), kAXFocusedWindowAttribute)
+        let cgFallback = interactiveWindows().first(where: { $0.pid == app.processIdentifier })
+        return frontmostAXWindowElement(for: app, cgFallback: cgFallback)
     }
 
     static func listWindows() -> [WindowRecord] {
@@ -207,79 +295,189 @@ enum WindowSupport {
         }
     }
 
+    static func hasDuplicateTitle(_ target: WindowRecord, in windows: [WindowRecord]? = nil) -> Bool {
+        let candidates = (windows ?? listWindows()).filter { $0.pid == target.pid && $0.title == target.title }
+        return candidates.count > 1
+    }
+
+    static func duplicateTitleWindows(in windows: [WindowRecord]) -> [WindowRecord] {
+        var counts: [String: Int] = [:]
+        for window in windows {
+            counts["\(window.pid)|\(window.title)"] = (counts["\(window.pid)|\(window.title)"] ?? 0) + 1
+        }
+        return windows.filter { (counts["\($0.pid)|\($0.title)"] ?? 0) > 1 }
+    }
+
     static func window(byID id: Int) -> WindowRecord? {
         listWindows().first(where: { $0.id == id })
     }
 
-    static func activateWindow(id: Int) throws -> [String: Any] {
-        guard let target = window(byID: id) else {
-            throw CUAError(message: "window not found: \(id)")
-        }
-        if let app = AppSupport.runningUserApplications().first(where: { $0.processIdentifier == target.pid }) {
-            _ = app.activate(options: [.activateIgnoringOtherApps])
-            if isAccessibilityTrusted() {
-                for window in axWindows(for: app) {
-                    let title = axString(window, kAXTitleAttribute) ?? ""
-                    let position = axPoint(window, kAXPositionAttribute) ?? .zero
-                    let size = axSize(window, kAXSizeAttribute) ?? .zero
-                    let bounds = CGRect(origin: position, size: size)
-                    let sameTitle = !target.title.isEmpty && title == target.title
-                    let sameSize = abs(bounds.width - target.bounds.width) < 12 && abs(bounds.height - target.bounds.height) < 12
-                    if sameTitle || sameSize {
-                        _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                        _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-                        break
-                    }
-                }
+    static func resolveTargetWindow(id: Int?) throws -> WindowRecord {
+        if let id {
+            guard let target = window(byID: id) else {
+                throw CUAError(message: "window not found: \(id)")
             }
-            usleep(150_000)
+            return target
         }
-        return [
-            "ok": true,
-            "window": frontmostWindow()?.json as Any,
+        guard let frontmost = frontmostWindow() else {
+            throw CUAError(message: "no frontmost window is available")
+        }
+        return frontmost
+    }
+
+    static func runningApplication(pid: pid_t) -> NSRunningApplication? {
+        AppSupport.runningUserApplications().first(where: { $0.processIdentifier == pid })
+    }
+
+    static func windowPayload(for target: WindowRecord) -> [String: Any]? {
+        if let id = target.id, let refreshed = window(byID: id) {
+            return refreshed.json
+        }
+        if let app = runningApplication(pid: target.pid),
+           let axWindow = axWindowElement(for: target, includeMinimized: true),
+           let refreshed = record(for: axWindow, app: app) {
+            return refreshed.json
+        }
+        return nil
+    }
+
+    static func axWindowElement(for target: WindowRecord, includeMinimized: Bool = false) -> AXUIElement? {
+        guard isAccessibilityTrusted(),
+              let app = runningApplication(pid: target.pid) else {
+            return nil
+        }
+
+        var fallback: AXUIElement?
+        for window in axWindows(for: app) {
+            if !includeMinimized, axBool(window, kAXMinimizedAttribute) == true {
+                continue
+            }
+            guard let position = axPoint(window, kAXPositionAttribute),
+                  let size = axSize(window, kAXSizeAttribute) else {
+                continue
+            }
+            let title = axString(window, kAXTitleAttribute) ?? ""
+            let bounds = CGRect(origin: position, size: size)
+            let matchedID = matchWindowID(pid: target.pid, title: title, bounds: bounds)
+            if let matchedID, matchedID == target.id {
+                return window
+            }
+            if target.id == nil,
+               title == target.title,
+               abs(bounds.origin.x - target.bounds.origin.x) < 2,
+               abs(bounds.origin.y - target.bounds.origin.y) < 2,
+               abs(bounds.width - target.bounds.width) < 2,
+               abs(bounds.height - target.bounds.height) < 2 {
+                return window
+            }
+            if fallback == nil,
+               title == target.title,
+               abs(bounds.origin.x - target.bounds.origin.x) < 12,
+               abs(bounds.origin.y - target.bounds.origin.y) < 12,
+               abs(bounds.width - target.bounds.width) < 12,
+               abs(bounds.height - target.bounds.height) < 12 {
+                fallback = window
+            }
+        }
+        return fallback
+    }
+
+    static func activateWindow(id: Int) throws -> [String: Any] {
+        let target = try resolveTargetWindow(id: id)
+        guard let app = runningApplication(pid: target.pid) else {
+            throw CUAError(message: "window app is no longer running: \(id)")
+        }
+        let windowsBefore = listWindows()
+        let duplicateTitle = hasDuplicateTitle(target, in: windowsBefore)
+
+        let appActivated = AppSupport.activateApplication(app)
+        if isAccessibilityTrusted() {
+            guard let window = axWindowElement(for: target, includeMinimized: true) else {
+                throw CUAError(message: "failed to resolve AX window for \(id)")
+            }
+            if axBool(window, kAXMinimizedAttribute) == true {
+                _ = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
+            _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        }
+
+        usleep(250_000)
+        let frontmost = frontmostWindow()
+        let frontmostPID = AppSupport.frontmostApplication()?.processIdentifier
+        let targetWindowCount = listWindows().filter { $0.pid == target.pid }.count
+        let sameTargetWindow = frontmost?.id == target.id
+        let sameTargetApp = frontmostPID == target.pid
+        let targetMain = axWindowElement(for: target, includeMinimized: true).flatMap { axBool($0, kAXMainAttribute) } == true
+        let ok = appActivated && (sameTargetWindow || targetMain || (sameTargetApp && targetWindowCount <= 1))
+        var payload: [String: Any] = [
+            "ok": ok,
             "targetId": id,
         ]
+        payload["window"] = windowPayload(for: target) as Any
+        if frontmost?.id != target.id || frontmost?.pid != target.pid {
+            payload["frontmostWindow"] = frontmost?.json as Any
+        }
+        if duplicateTitle {
+            payload["hint"] = duplicateTitleHint
+            payload["fallbackSuggested"] = "screen-space"
+        }
+        return payload
     }
 
-    static func minimizeFrontmostWindow() throws -> [String: Any] {
-        try PermissionSupport.require(.accessibility, for: "window minimize")
-        guard let window = frontmostWindowAXElement() else {
-            throw CUAError(message: "no frontmost window is available")
-        }
-        let result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
-        guard result == .success else {
-            throw CUAError(message: "failed to minimize the frontmost window")
-        }
-        return ["ok": true, "window": frontmostWindow()?.json as Any]
-    }
-
-    static func maximizeFrontmostWindow() throws -> [String: Any] {
+    static func maximizeWindow(id: Int?) throws -> [String: Any] {
         try PermissionSupport.require(.accessibility, for: "window maximize")
-        guard let window = frontmostWindowAXElement() else {
-            throw CUAError(message: "no frontmost window is available")
+        let target = try resolveTargetWindow(id: id)
+        guard let axWindow = axWindowElement(for: target, includeMinimized: true) else {
+            throw CUAError(message: "failed to resolve AX window\(id.map { " \($0)" } ?? "")")
         }
-        guard let button = axElement(window, kAXZoomButtonAttribute) else {
-            throw CUAError(message: "failed to find the zoom button on the frontmost window")
+        if let app = runningApplication(pid: target.pid) {
+            _ = AppSupport.activateApplication(app)
+            _ = AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+        }
+        guard let button = axElement(axWindow, kAXZoomButtonAttribute) else {
+            throw CUAError(message: "failed to find the zoom button on window\(id.map { " \($0)" } ?? "")")
         }
         let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
         guard result == .success else {
-            throw CUAError(message: "failed to maximize the frontmost window")
+            throw CUAError(message: "failed to maximize window\(id.map { " \($0)" } ?? "")")
         }
-        return ["ok": true, "window": frontmostWindow()?.json as Any]
+        usleep(150_000)
+        let frontmost = frontmostWindow()
+        var payload: [String: Any] = [
+            "ok": true,
+            "targetId": target.id as Any,
+        ]
+        payload["window"] = windowPayload(for: target) as Any
+        if frontmost?.id != target.id || frontmost?.pid != target.pid {
+            payload["frontmostWindow"] = frontmost?.json as Any
+        }
+        return payload
     }
 
-    static func closeFrontmostWindow() throws -> [String: Any] {
+    static func closeWindow(id: Int?) throws -> [String: Any] {
         try PermissionSupport.require(.accessibility, for: "window close")
-        guard let window = frontmostWindowAXElement() else {
-            throw CUAError(message: "no frontmost window is available")
+        let target = try resolveTargetWindow(id: id)
+        guard let axWindow = axWindowElement(for: target, includeMinimized: true) else {
+            throw CUAError(message: "failed to resolve AX window\(id.map { " \($0)" } ?? "")")
         }
-        guard let button = axElement(window, kAXCloseButtonAttribute) else {
-            throw CUAError(message: "failed to find the close button on the frontmost window")
+        if let app = runningApplication(pid: target.pid) {
+            _ = AppSupport.activateApplication(app)
+            _ = AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+        }
+        guard let button = axElement(axWindow, kAXCloseButtonAttribute) else {
+            throw CUAError(message: "failed to find the close button on window\(id.map { " \($0)" } ?? "")")
         }
         let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
         guard result == .success else {
-            throw CUAError(message: "failed to close the frontmost window")
+            throw CUAError(message: "failed to close window\(id.map { " \($0)" } ?? "")")
         }
-        return ["ok": true]
+        usleep(350_000)
+        return [
+            "ok": target.id.flatMap { window(byID: $0) } == nil,
+            "targetId": target.id as Any,
+        ]
     }
 }
