@@ -53,7 +53,7 @@ jobs:
           echo "ARCHIVE_BASENAME=${ARCHIVE_BASENAME}" >> "${GITHUB_ENV}"
 
       - name: Upload packaged CLI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.ARCHIVE_BASENAME }}
           path: |
