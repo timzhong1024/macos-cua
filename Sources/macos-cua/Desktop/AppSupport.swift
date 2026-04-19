@@ -2,6 +2,9 @@ import AppKit
 import Foundation
 
 enum AppSupport {
+    static let launchTimeoutMs = 20_000
+    static let launchPollIntervalMicros: useconds_t = 100_000
+
     static func appBundleName(_ app: NSRunningApplication) -> String? {
         app.bundleURL?.deletingPathExtension().lastPathComponent
     }
@@ -96,15 +99,26 @@ enum AppSupport {
         })
     }
 
-    static func waitForRunningApplication(matching query: String, timeoutMs: Int = 2000) -> NSRunningApplication? {
-        let attempts = max(1, timeoutMs / 100)
+    static func waitForRunningApplication(matching query: String, timeoutMs: Int = launchTimeoutMs) -> NSRunningApplication? {
+        let attempts = max(1, timeoutMs / Int(launchPollIntervalMicros / 1_000))
         for _ in 0..<attempts {
             if let app = findRunningApplication(matching: query) {
                 return app
             }
-            usleep(100_000)
+            usleep(launchPollIntervalMicros)
         }
         return findRunningApplication(matching: query)
+    }
+
+    static func requireRunningApplication(
+        matching query: String,
+        timeoutMs: Int = launchTimeoutMs,
+        action: String
+    ) throws -> NSRunningApplication {
+        if let app = waitForRunningApplication(matching: query, timeoutMs: timeoutMs) {
+            return app
+        }
+        throw CUAError(message: "timed out after \(timeoutMs / 1000)s waiting to \(action) app: \(query)")
     }
 
     static func activateApplication(_ app: NSRunningApplication) -> Bool {
@@ -136,11 +150,11 @@ enum AppSupport {
         }
 
         try openApplication(query: query, activate: false)
-        let app = waitForRunningApplication(matching: query)
+        let app = try requireRunningApplication(matching: query, action: "launch")
         return [
             "ok": true,
             "launched": true,
-            "app": app.map(record(for:))?.json as Any,
+            "app": record(for: app).json,
         ]
     }
 
@@ -183,11 +197,11 @@ enum AppSupport {
         }
 
         try openApplication(query: query, activate: true)
-        let app = waitForRunningApplication(matching: query) ?? frontmostApplication()
+        let app = try requireRunningApplication(matching: query, action: "launch")
         return [
-            "ok": app.map(activateApplication) ?? true,
+            "ok": activateApplication(app),
             "launched": true,
-            "app": app.map(record(for:))?.json as Any,
+            "app": record(for: app).json,
         ]
     }
 }

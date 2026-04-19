@@ -5,6 +5,64 @@ import Foundation
 
 enum WindowSupport {
     static let duplicateTitleHint = "Duplicate window titles detected; use screen-space to bring the target window frontmost first."
+    static let modalWindowRoles: Set<String> = [
+        "AXSheet",
+        "AXDrawer",
+    ]
+    static let modalWindowSubroles: Set<String> = [
+        "AXDialog",
+        "AXFloatingWindow",
+        "AXSystemDialog",
+    ]
+    static let blockingModalReason = "A modal dialog is currently focused. Handle it before interacting with the main window."
+
+    struct WindowDescriptor {
+        let record: WindowRecord
+        let role: String?
+        let subrole: String?
+
+        var json: [String: Any] {
+            var payload = record.json
+            payload["role"] = role as Any
+            payload["subrole"] = subrole as Any
+            return payload
+        }
+    }
+
+    struct BlockingModalState {
+        let focusedWindow: WindowDescriptor?
+        let mainWindow: WindowDescriptor?
+        let blockingModalWindow: WindowDescriptor?
+
+        var blockingModalPresent: Bool { blockingModalWindow != nil }
+        var interactionBlocked: Bool { blockingModalPresent }
+
+        var payload: [String: Any] {
+            var payload: [String: Any] = [
+                "blockingModalPresent": blockingModalPresent,
+                "interactionBlocked": interactionBlocked,
+            ]
+            if let blockingModalWindow {
+                payload["blockingModalWindow"] = blockingModalWindow.json
+                payload["requiredAction"] = "dismiss-or-handle-modal"
+                payload["allowedTargets"] = ["modal", "system-dialog"]
+                payload["blockedTargets"] = ["main-window"]
+                payload["blockingReason"] = blockingModalReason
+            }
+            if let mainWindow {
+                payload["mainWindow"] = mainWindow.json
+            }
+            return payload
+        }
+
+        var line: String? {
+            guard let blockingModalWindow else { return nil }
+            let title = blockingModalWindow.record.title.isEmpty ? "<untitled>" : blockingModalWindow.record.title
+            let role = blockingModalWindow.role ?? "AXWindow"
+            let subroleSuffix = blockingModalWindow.subrole.map { "/\($0)" } ?? ""
+            return "Blocking modal: \(title) [\(role)\(subroleSuffix)]"
+        }
+    }
 
     static func isAccessibilityTrusted() -> Bool {
         PermissionSupport.isGranted(.accessibility)
@@ -121,9 +179,11 @@ enum WindowSupport {
               size.height > 1 else {
             return nil
         }
-        let title = axString(window, kAXTitleAttribute) ?? (cgFallback?.title ?? "")
+        let axTitle = axString(window, kAXTitleAttribute) ?? ""
         let bounds = CGRect(origin: position, size: size)
-        let id = matchWindowID(pid: app.processIdentifier, title: title, bounds: bounds) ?? cgFallback?.id
+        let id = matchWindowID(pid: app.processIdentifier, title: axTitle, bounds: bounds)
+            ?? (shouldAssociateFallbackWindowID(title: axTitle, bounds: bounds, fallback: cgFallback) ? cgFallback?.id : nil)
+        let title = axTitle.isEmpty ? (cgFallback?.title ?? "") : axTitle
         return WindowRecord(
             id: id,
             pid: app.processIdentifier,
@@ -136,13 +196,120 @@ enum WindowSupport {
         )
     }
 
+    static func descriptor(for window: AXUIElement, app: NSRunningApplication, cgFallback: WindowRecord? = nil) -> WindowDescriptor? {
+        guard let record = record(for: window, app: app, cgFallback: cgFallback) else {
+            return nil
+        }
+        return WindowDescriptor(
+            record: record,
+            role: axString(window, kAXRoleAttribute),
+            subrole: axString(window, kAXSubroleAttribute)
+        )
+    }
+
+    static func isModalLikeWindow(role: String?, subrole: String?) -> Bool {
+        role.map(modalWindowRoles.contains) == true || subrole.map(modalWindowSubroles.contains) == true
+    }
+
+    static func shouldAssociateFallbackWindowID(title: String, bounds: CGRect, fallback: WindowRecord?) -> Bool {
+        guard let fallback else { return false }
+        let sameTitle = !title.isEmpty && title == fallback.title
+        let closeOrigin = abs(bounds.origin.x - fallback.bounds.origin.x) < 12
+            && abs(bounds.origin.y - fallback.bounds.origin.y) < 12
+        let closeSize = abs(bounds.width - fallback.bounds.width) < 12
+            && abs(bounds.height - fallback.bounds.height) < 12
+        return sameTitle || (closeOrigin && closeSize)
+    }
+
+    static func sameAXElement(_ lhs: AXUIElement?, _ rhs: AXUIElement?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return CFEqual(lhs, rhs)
+    }
+
+    static func blockingModalState(
+        focused: WindowDescriptor?,
+        main: WindowDescriptor?,
+        focusedElement: AXUIElement?,
+        mainElement: AXUIElement?
+    ) -> BlockingModalState {
+        let focusedDiffersFromMain = focusedElement != nil && mainElement != nil && !sameAXElement(focusedElement, mainElement)
+        let blockingModalWindow: WindowDescriptor?
+        if let focused,
+           focusedDiffersFromMain,
+           isModalLikeWindow(role: focused.role, subrole: focused.subrole) {
+            blockingModalWindow = focused
+        } else {
+            blockingModalWindow = nil
+        }
+        return BlockingModalState(
+            focusedWindow: focused,
+            mainWindow: main,
+            blockingModalWindow: blockingModalWindow
+        )
+    }
+
+    static func currentBlockingModalState() -> BlockingModalState {
+        guard isAccessibilityTrusted(),
+              let app = AppSupport.frontmostApplication() else {
+            return BlockingModalState(focusedWindow: nil, mainWindow: nil, blockingModalWindow: nil)
+        }
+
+        let cgFallback = interactiveWindows().first(where: { $0.pid == app.processIdentifier })
+        let appElement = axAppElement(pid: app.processIdentifier)
+        let focusedElement = axElement(appElement, kAXFocusedWindowAttribute)
+        let mainElement = axElement(appElement, kAXMainWindowAttribute)
+        let focused = focusedElement.flatMap { descriptor(for: $0, app: app, cgFallback: cgFallback) }
+        let main = mainElement.flatMap { descriptor(for: $0, app: app, cgFallback: cgFallback) }
+        return blockingModalState(
+            focused: focused,
+            main: main,
+            focusedElement: focusedElement,
+            mainElement: mainElement
+        )
+    }
+
+    static func deduplicatedAXWindows(_ windows: [AXUIElement]) -> [AXUIElement] {
+        var seen = Set<ObjectIdentifier>()
+        var deduped: [AXUIElement] = []
+        for window in windows {
+            let identifier = ObjectIdentifier(window)
+            if seen.insert(identifier).inserted {
+                deduped.append(window)
+            }
+        }
+        return deduped
+    }
+
     static func frontmostAXWindowElement(for app: NSRunningApplication, cgFallback: WindowRecord?) -> AXUIElement? {
         guard isAccessibilityTrusted() else { return nil }
 
         let appElement = axAppElement(pid: app.processIdentifier)
-        let main = axElement(appElement, kAXMainWindowAttribute)
         let focused = axElement(appElement, kAXFocusedWindowAttribute)
-        let candidates = [main, focused].compactMap { $0 } + axWindows(for: app)
+        let main = axElement(appElement, kAXMainWindowAttribute)
+        let candidates = deduplicatedAXWindows([focused, main].compactMap { $0 } + axWindows(for: app))
+        let focusedDescriptor = focused.flatMap { descriptor(for: $0, app: app, cgFallback: cgFallback) }
+        let mainDescriptor = main.flatMap { descriptor(for: $0, app: app, cgFallback: cgFallback) }
+        let modalState = blockingModalState(
+            focused: focusedDescriptor,
+            main: mainDescriptor,
+            focusedElement: focused,
+            mainElement: main
+        )
+
+        if modalState.blockingModalPresent, let focused {
+            return focused
+        }
+
+        if let focused,
+           let focusedRecord = focusedDescriptor?.record {
+            let focusedDiffersFromMain = !sameAXElement(focused, main)
+            if focusedDiffersFromMain {
+                return focused
+            }
+            if focusedRecord.id == nil {
+                return focused
+            }
+        }
 
         if let fallbackID = cgFallback?.id {
             for window in candidates {
@@ -155,7 +322,7 @@ enum WindowSupport {
             }
         }
 
-        return main ?? focused ?? candidates.first
+        return focused ?? main ?? candidates.first
     }
 
     static func frontmostWindow() -> WindowRecord? {

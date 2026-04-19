@@ -223,6 +223,7 @@ enum CLI {
         let mouseButtons = InputSupport.currentMouseButtons()
         let frontmostApp = AppSupport.frontmostApplication().map(AppSupport.record(for:))?.json
         let frontmostWindow = WindowSupport.frontmostWindow()?.json
+        let blockingModalState = WindowSupport.currentBlockingModalState()
         let pointerWindowLine = pointerWindow.map {
             "\(Int($0.x.rounded())),\(Int($0.y.rounded()))"
         } ?? "n/a"
@@ -242,17 +243,23 @@ enum CLI {
             frontmostApp: frontmostApp,
             frontmostWindow: frontmostWindow
         )
+        var enrichedPayload = payload
+        applyBlockingModalState(blockingModalState, to: &enrichedPayload)
+        var lines = [
+            "Default coordinates: \(coordinateContext.summary)",
+            "Pointer (screen): \(Int(pointerScreen.x.rounded())),\(Int(pointerScreen.y.rounded()))",
+            "Pointer (window): \(pointerWindowLine)",
+            "Held modifiers: \(modifiers.isEmpty ? "none" : modifiers.joined(separator: ", "))",
+            "Held mouse buttons: \(mouseButtons.isEmpty ? "none" : mouseButtons.joined(separator: ", "))",
+            "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
+            "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
+        ]
+        if let line = blockingModalState.line {
+            lines.append(line)
+        }
         try output.emit(
-            payload,
-            lines: [
-                "Default coordinates: \(coordinateContext.summary)",
-                "Pointer (screen): \(Int(pointerScreen.x.rounded())),\(Int(pointerScreen.y.rounded()))",
-                "Pointer (window): \(pointerWindowLine)",
-                "Held modifiers: \(modifiers.isEmpty ? "none" : modifiers.joined(separator: ", "))",
-                "Held mouse buttons: \(mouseButtons.isEmpty ? "none" : mouseButtons.joined(separator: ", "))",
-                "Frontmost app: \((frontmostApp?["name"] as? String) ?? "n/a")",
-                "Frontmost window: \((frontmostWindow?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "<untitled>")",
-            ]
+            enrichedPayload,
+            lines: lines
         )
     }
 
@@ -685,5 +692,11 @@ enum CLI {
         }
 
         return (remaining, explicitScreen, region)
+    }
+
+    static func applyBlockingModalState(_ blockingModalState: WindowSupport.BlockingModalState, to payload: inout [String: Any]) {
+        for (key, value) in blockingModalState.payload {
+            payload[key] = value
+        }
     }
 }
